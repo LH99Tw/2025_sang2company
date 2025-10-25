@@ -40,6 +40,70 @@ def _build_allowed_globals() -> Dict[str, Any]:
         ts_sum,
     )
 
+    def _to_column_index(source: Any) -> Optional[pd.Index]:
+        cols = getattr(source, 'columns', None)
+        if cols is not None and len(cols) > 0:
+            return pd.Index(cols)
+        name = getattr(source, 'name', None)
+        if name:
+            return pd.Index([name])
+        return None
+
+    def _propagate_columns(result: Any, args: Tuple[Any, ...]) -> Any:
+        if isinstance(result, pd.Series):
+            existing = getattr(result, 'columns', None)
+            if existing is None or (hasattr(existing, '__len__') and len(existing) == 0):
+                copied = None
+                for arg in args:
+                    copied = _to_column_index(arg)
+                    if copied is not None:
+                        break
+                if copied is None:
+                    copied = pd.Index([getattr(result, 'name', None) or 'value'])
+                try:
+                    result.columns = copied
+                except Exception:
+                    setattr(result, 'columns', copied)
+        elif isinstance(result, pd.DataFrame):
+            if result.empty or result.shape[1] == 0:
+                result.columns = pd.Index(['value'])
+        elif isinstance(result, (list, tuple)):
+            return type(result)(_propagate_columns(item, args) for item in result)
+        return result
+
+    def _ensure_column_vector(array: Any) -> np.ndarray:
+        arr = np.asarray(array)
+        if arr.ndim == 0:
+            return arr.reshape(1, 1)
+        if arr.ndim == 1:
+            return arr.reshape(-1, 1)
+        if arr.ndim == 2:
+            if arr.shape[1] == 0:
+                return arr.reshape(arr.shape[0], 1)
+            return arr
+        return arr.reshape(arr.shape[0], -1)
+
+    class _SafeNumpy:
+        def __init__(self, module):
+            self._module = module
+
+        def minimum(self, a, b):
+            return np.minimum(_ensure_column_vector(a), _ensure_column_vector(b))
+
+        def maximum(self, a, b):
+            return np.maximum(_ensure_column_vector(a), _ensure_column_vector(b))
+
+        def __getattr__(self, item):
+            return getattr(self._module, item)
+
+    def _wrap_series_output(func):
+        def wrapper(*args, **kwargs):
+            result = func(*args, **kwargs)
+            return _propagate_columns(result, args)
+        wrapper.__name__ = getattr(func, '__name__', 'wrapped_function')
+        wrapper.__doc__ = getattr(func, '__doc__')
+        return wrapper
+
     def ts_mean(df: Any, window: int = 10):
         """Rolling mean; Series 또는 DataFrame 지원."""
         window = int(window)
@@ -81,27 +145,27 @@ def _build_allowed_globals() -> Dict[str, Any]:
 
     globals_map: Dict[str, Any] = {
         "__builtins__": safe_builtins,
-        "np": np,
+        "np": _SafeNumpy(np),
         "pd": pd,
-        "adv": adv,
-        "correlation": correlation,
-        "covariance": covariance,
-        "decay_linear": decay_linear,
-        "delta": delta,
-        "delay": delay,
+        "adv": _wrap_series_output(adv),
+        "correlation": _wrap_series_output(correlation),
+        "covariance": _wrap_series_output(covariance),
+        "decay_linear": _wrap_series_output(decay_linear),
+        "delta": _wrap_series_output(delta),
+        "delay": _wrap_series_output(delay),
         "floor_window": floor_window,
-        "product": product,
-        "rank": rank,
-        "safe_clean": safe_clean,
-        "scale": scale,
-        "sma": sma,
-        "stddev": stddev,
-        "ts_argmax": ts_argmax,
-        "ts_argmin": ts_argmin,
-        "ts_max": ts_max,
-        "ts_min": ts_min,
-        "ts_rank": ts_rank,
-        "ts_sum": ts_sum,
+        "product": _wrap_series_output(product),
+        "rank": _wrap_series_output(rank),
+        "safe_clean": _wrap_series_output(safe_clean),
+        "scale": _wrap_series_output(scale),
+        "sma": _wrap_series_output(sma),
+        "stddev": _wrap_series_output(stddev),
+        "ts_argmax": _wrap_series_output(ts_argmax),
+        "ts_argmin": _wrap_series_output(ts_argmin),
+        "ts_max": _wrap_series_output(ts_max),
+        "ts_min": _wrap_series_output(ts_min),
+        "ts_rank": _wrap_series_output(ts_rank),
+        "ts_sum": _wrap_series_output(ts_sum),
         "ts_mean": ts_mean,
         "ts_stddev": ts_stddev,
         "ts_std": ts_stddev,
@@ -143,7 +207,20 @@ def _coerce_to_series(result: Any, dataset: AlphaDataset) -> pd.Series:
     if isinstance(result, pd.DataFrame):
         if result.shape[1] == 1:
             return result.iloc[:, 0]
-        raise AlphaExecutionError("Expression returned DataFrame with multiple columns")
+
+        # 2차원 행렬을 단일 시계열로 축소합니다.
+        try:
+            if result.shape[0] == result.shape[1] and list(result.columns) == list(result.index):
+                diagonal = result.to_numpy().diagonal()
+                return pd.Series(diagonal, index=result.index)
+        except Exception:
+            pass
+
+        reduced = result.mean(axis=1, numeric_only=True)
+        if isinstance(reduced, pd.Series) and len(reduced) == len(dataset.frame.index):
+            return reduced
+
+        raise AlphaExecutionError("Expression returned DataFrame with incompatible shape")
 
     if isinstance(result, (np.ndarray, list, tuple)):
         if len(result) == len(dataset.frame.index):

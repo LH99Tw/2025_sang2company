@@ -171,4 +171,18 @@ export const getDataStats = async () => {
   return response.data;
 };
 
+export const getTickerList = async () => {
+  const response = await api.get('/api/data/ticker-list');
+  return response.data;
+};
+
+export const getTickerPerformance = async (params: {
+  tickers: string[];
+  start_date?: string;
+  end_date?: string;
+}) => {
+  const response = await api.post('/api/data/ticker-performance', params);
+  return response.data;
+};
+
 export default api;

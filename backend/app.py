@@ -268,25 +268,40 @@ def calculate_factor_performance(
     rebalancing_frequency: str,
     top_count: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """리밸런싱 전략 기반 팩터 성과 지표를 계산합니다."""
+    """리밸런싱 전략 기반 팩터 성과 지표를 계산합니다.
+
+    - 포트폴리오 신호는 리밸런싱 날짜 t에서 계산됩니다.
+    - 체결은 t 다음 거래일 시가(Open)에서 이루어집니다.
+    - 포지션은 다음 리밸런싱 시점의 체결 시가까지 보유합니다.
+    """
 
     if merged_data is None or merged_data.empty:
         raise ValueError("팩터 성과를 계산할 데이터가 없습니다")
 
-    required_cols = {'Date', 'Ticker', 'Close', factor_col}
+    required_cols = {'Date', 'Ticker', 'Open', 'Close', factor_col}
     missing_cols = required_cols.difference(merged_data.columns)
     if missing_cols:
         raise ValueError(f"필수 컬럼이 부족합니다: {', '.join(sorted(missing_cols))}")
 
-    working_df = merged_data[['Date', 'Ticker', 'Close', factor_col]].dropna().copy()
+    working_df = merged_data[list(required_cols)].dropna().copy()
     if working_df.empty:
         raise ValueError("유효한 팩터 데이터가 없습니다")
 
     working_df['Date'] = pd.to_datetime(working_df['Date'])
     working_df = working_df.sort_values(['Date', 'Ticker']).reset_index(drop=True)
 
+    # 거래 가능한 날짜 맵 (현재 날짜 → 다음 거래일)
+    unique_dates = sorted(working_df['Date'].unique())
+    if len(unique_dates) < 3:  # 최소 진입/청산을 위해 3일 이상 필요
+        raise ValueError("거래 가능한 날짜가 부족합니다")
+
+    next_date_map = {
+        current: unique_dates[idx + 1]
+        for idx, current in enumerate(unique_dates[:-1])
+    }
+
     if rebalancing_frequency == 'daily':
-        rebalance_dates = sorted(working_df['Date'].unique())
+        rebalance_dates = unique_dates
     elif rebalancing_frequency == 'weekly':
         rebalance_dates = sorted(working_df[working_df['Date'].dt.weekday == 0]['Date'].unique())
     elif rebalancing_frequency == 'monthly':
@@ -300,7 +315,7 @@ def calculate_factor_performance(
             ]['Date'].unique()
         )
     else:
-        rebalance_dates = sorted(working_df['Date'].unique())
+        rebalance_dates = unique_dates
 
     if len(rebalance_dates) < 2:
         raise ValueError("리밸런싱 날짜가 부족합니다")
@@ -311,19 +326,31 @@ def calculate_factor_performance(
     for idx, rebalance_date in enumerate(rebalance_dates[:-1]):
         next_rebalance_date = rebalance_dates[idx + 1]
 
-        period_df = working_df[working_df['Date'] == rebalance_date].copy()
-        next_df = working_df[working_df['Date'] == next_rebalance_date][['Ticker', 'Close']].rename(
-            columns={'Close': 'Close_future'}
-        )
+        entry_date = next_date_map.get(rebalance_date)
+        exit_entry_date = next_date_map.get(next_rebalance_date)
 
-        if len(period_df) < 5 or next_df.empty:
+        # 다음 거래일 또는 청산 거래일이 존재하지 않으면 건너뜁니다.
+        if entry_date is None or exit_entry_date is None:
             continue
 
-        period_df = period_df.merge(next_df, on='Ticker', how='inner')
+        signal_df = working_df[working_df['Date'] == rebalance_date][['Ticker', factor_col]]
+        entry_prices = working_df[working_df['Date'] == entry_date][['Ticker', 'Open']].rename(
+            columns={'Open': 'Open_entry'}
+        )
+        exit_prices = working_df[working_df['Date'] == exit_entry_date][['Ticker', 'Open']].rename(
+            columns={'Open': 'Open_exit'}
+        )
+
+        period_df = (
+            signal_df
+            .merge(entry_prices, on='Ticker', how='inner')
+            .merge(exit_prices, on='Ticker', how='inner')
+        )
+
         if len(period_df) < 5:
             continue
 
-        period_df['HoldingReturn'] = period_df['Close_future'] / period_df['Close'] - 1
+        period_df['HoldingReturn'] = period_df['Open_exit'] / period_df['Open_entry'] - 1
 
         valid = period_df.dropna(subset=[factor_col, 'HoldingReturn'])
         if valid.empty:
@@ -346,11 +373,11 @@ def calculate_factor_performance(
         short_return = short_portfolio['HoldingReturn'].mean()
         factor_return = long_return - short_return - (2 * transaction_cost)
 
-        holding_days = max(1, len(pd.bdate_range(rebalance_date, next_rebalance_date)) - 1)
+        holding_days = max(1, len(pd.bdate_range(entry_date, exit_entry_date)) - 1)
 
         factor_returns.append(
             {
-                'Date': rebalance_date,
+                'Date': entry_date,
                 'FactorReturn': factor_return,
                 'HoldingDays': holding_days,
             }
@@ -446,6 +473,81 @@ def calculate_factor_performance(
         'cumulative_returns': cumulative_returns,
         'cagr_series': rolling_cagr,
     }
+
+
+def calculate_ticker_performance_metrics(
+    ticker_df: pd.DataFrame,
+) -> Tuple[List[Tuple[pd.Timestamp, float]], Dict[str, float]]:
+    """단일 종목의 가격 데이터를 기반으로 성과 지표와 누적 수익률 시리즈를 계산합니다."""
+    if ticker_df is None or ticker_df.empty:
+        raise ValueError("가격 데이터가 비어있습니다")
+
+    working_df = ticker_df[['Date', 'Close']].dropna().copy()
+    if working_df.empty:
+        raise ValueError("유효한 종가 데이터가 없습니다")
+
+    working_df['Date'] = pd.to_datetime(working_df['Date'])
+    working_df = working_df.sort_values('Date').reset_index(drop=True)
+
+    returns = working_df['Close'].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    if not returns.empty:
+        returns.iloc[0] = 0.0
+
+    nav_series = (1 + returns).cumprod()
+    if not nav_series.empty:
+        nav_series.iloc[0] = 1.0
+    nav = nav_series.to_numpy()
+
+    base_price = working_df['Close'].iloc[0]
+    buy_hold_returns = working_df['Close'] / base_price - 1.0
+    buy_hold_returns.iloc[0] = 0.0
+
+    periods = len(returns)
+    years = periods / 252 if periods > 1 else 0.0
+    mean_return = returns.mean() if periods > 0 else 0.0
+    return_std = returns.std(ddof=0) if periods > 1 else 0.0
+
+    sharpe = 0.0
+    volatility = 0.0
+    if return_std > 0:
+        sharpe = mean_return / return_std * np.sqrt(252)
+        volatility = return_std * np.sqrt(252)
+
+    downside = returns[returns < 0]
+    downside_std = downside.std(ddof=0) if len(downside) > 0 else 0.0
+    sortino = mean_return / downside_std * np.sqrt(252) if downside_std > 0 else 0.0
+
+    win_rate = float((returns > 0).mean()) if periods > 0 else 0.0
+
+    if len(nav):
+        running_max = np.maximum.accumulate(nav)
+        drawdown = (nav - running_max) / running_max
+        max_drawdown = float(drawdown.min())
+        final_nav = nav[-1]
+    else:
+        max_drawdown = 0.0
+        final_nav = 1.0
+
+    total_return = float(buy_hold_returns.iloc[-1]) if not buy_hold_returns.empty else 0.0
+    cagr = (final_nav) ** (1 / years) - 1 if years > 0 and final_nav > 0 else 0.0
+
+    series_points = [
+        (date, float(value))
+        for date, value in zip(working_df['Date'], buy_hold_returns)
+    ]
+
+    metrics = {
+        'cagr': float(cagr),
+        'sharpe_ratio': float(sharpe),
+        'sortino_ratio': float(sortino),
+        'max_drawdown': float(max_drawdown),
+        'win_rate': float(win_rate),
+        'volatility': float(volatility),
+        'total_return': float(total_return),
+        'ic_mean': None,
+    }
+
+    return series_points, metrics
 
 
 def _clean_prompt(text: str) -> str:
@@ -720,6 +822,48 @@ def compute_factor_series_from_registry(factor_name: str,
     definition = registry.get(factor_name)
     frames: List[pd.DataFrame] = []
 
+    def normalize_output(raw: Any, dataset: AlphaDataset) -> pd.Series:
+        """Factor 결과를 일관된 Series로 변환합니다."""
+        if isinstance(raw, pd.Series):
+            return raw.reindex(dataset.frame.index).ffill().bfill()
+
+        if isinstance(raw, pd.DataFrame):
+            if raw.empty:
+                return pd.Series(index=dataset.frame.index, dtype=float)
+            target = raw.iloc[:, 0]
+            return target.reindex(dataset.frame.index).ffill().bfill()
+
+        if isinstance(raw, dict):
+            # dictionary 형식이면 팩터 이름과 일치하는 키를 우선 사용
+            if factor_name in raw:
+                return normalize_output(raw[factor_name], dataset)
+            # 첫 번째 값 사용 (일반적으로 단일 시리즈만 포함)
+            try:
+                first_value = next(iter(raw.values()))
+            except StopIteration:
+                return pd.Series(index=dataset.frame.index, dtype=float)
+            return normalize_output(first_value, dataset)
+
+        if isinstance(raw, (np.ndarray, list, tuple)):
+            arr = np.asarray(raw, dtype=float)
+            if arr.ndim == 1:
+                if len(arr) == len(dataset.frame.index):
+                    return pd.Series(arr, index=dataset.frame.index)
+                return pd.Series(index=dataset.frame.index, dtype=float)
+            if arr.ndim == 2 and arr.shape[1] >= 1:
+                column = arr[:, 0]
+                if len(column) == len(dataset.frame.index):
+                    return pd.Series(column, index=dataset.frame.index)
+            return pd.Series(index=dataset.frame.index, dtype=float)
+
+        if np.isscalar(raw):
+            return pd.Series(raw, index=dataset.frame.index, dtype=float)
+
+        # 그 밖의 타입은 문자열 표현을 로깅하고 NaN 시리즈 반환
+        logger.warning("팩터 %s 결과 타입 %s을(를) Series로 변환할 수 없어 NaN으로 채웁니다.",
+                       factor_name, type(raw).__name__)
+        return pd.Series(index=dataset.frame.index, dtype=float)
+
     for ticker, ticker_df in price_data.groupby('Ticker'):
         dataset = prepare_alpha_dataset_from_price(ticker_df)
         try:
@@ -727,20 +871,12 @@ def compute_factor_series_from_registry(factor_name: str,
         except Exception as exc:
             raise RuntimeError(f"{factor_name} 계산 실패 ({ticker}): {exc}") from exc
 
-        if isinstance(factor_values, pd.DataFrame):
-            if factor_values.shape[1] > 1:
-                factor_values = factor_values.iloc[:, 0]
-            else:
-                factor_values = factor_values.iloc[:, 0]
-        elif not isinstance(factor_values, pd.Series):
-            factor_values = pd.Series(factor_values, index=dataset.frame.index)
-
-        factor_values = factor_values.reindex(dataset.frame.index).ffill().bfill()
+        factor_series = normalize_output(factor_values, dataset)
 
         frames.append(pd.DataFrame({
             'Date': dataset.frame.index,
             'Ticker': ticker,
-            factor_name: factor_values.values
+            factor_name: factor_series.values
         }))
 
     if not frames:
@@ -1332,7 +1468,13 @@ def run_backtest():
                     for idx, factor in enumerate(missing_factors, 1):
                         try:
                             computed = compute_factor_series_from_registry(factor, registry, price_data)
+                            if computed is None or not isinstance(computed, pd.DataFrame):
+                                raise ValueError("계산 결과가 DataFrame 형식이 아닙니다")
+                            if computed.empty:
+                                raise ValueError("계산 결과가 비어 있습니다")
                             computed = computed[(computed['Date'] >= start_date_dt) & (computed['Date'] <= end_date_dt)]
+                            if computed.empty:
+                                raise ValueError("지정한 기간에 데이터가 없습니다")
                             if alpha_data.empty:
                                 alpha_data = computed
                             else:
@@ -1340,7 +1482,7 @@ def run_backtest():
                             append_status(log=f"{factor} 계산 완료 ({idx}/{len(missing_factors)})")
                         except Exception as exc:
                             logger.error("%s 팩터 계산 실패: %s", factor, exc)
-                            append_status(log=f"{factor} 팩터 계산 실패: {exc}")
+                            append_status(log=f"{factor} 계산 실패: {exc}")
                 else:
                     append_status(progress=35, log="모든 팩터가 사전 계산되어 있습니다.")
 
@@ -1366,148 +1508,34 @@ def run_backtest():
                         append_status(log=f"{factor} 데이터가 없어 건너뜁니다.")
                         continue
 
-                    merged_data = merged_data.sort_values(['Ticker', 'Date'])
-                    merged_data['NextDayReturn'] = merged_data.groupby('Ticker')['Close'].shift(-1) / merged_data['Close'] - 1
-                    merged_data = merged_data.dropna(subset=[factor, 'NextDayReturn'])
-                    if merged_data.empty:
-                        append_status(log=f"{factor} 유효 표본이 없어 건너뜁니다.")
-                        continue
-
-                    if rebalancing_frequency == 'daily':
-                        rebalance_dates = sorted(merged_data['Date'].unique())
-                    elif rebalancing_frequency == 'weekly':
-                        rebalance_dates = sorted(merged_data[merged_data['Date'].dt.weekday == 0]['Date'].unique())
-                    elif rebalancing_frequency == 'monthly':
-                        rebalance_dates = sorted(merged_data[merged_data['Date'].dt.day == 1]['Date'].unique())
-                    elif rebalancing_frequency == 'quarterly':
-                        quarterly_months = [1, 4, 7, 10]
-                        rebalance_dates = sorted(merged_data[
-                            (merged_data['Date'].dt.month.isin(quarterly_months)) &
-                            (merged_data['Date'].dt.day == 1)
-                        ]['Date'].unique())
-                    else:
-                        rebalance_dates = sorted(merged_data['Date'].unique())
-
-                    factor_returns = []
-                    holding_periods = []
-                    if len(rebalance_dates) < 2:
-                        append_status(log=f"{factor} 리밸런싱 구간이 부족해 건너뜁니다.")
-                        continue
-
-                    for idx_reb, rebalance_date in enumerate(rebalance_dates[:-1]):
-                        next_rebalance_date = rebalance_dates[idx_reb + 1]
-
-                        group = merged_data[merged_data['Date'] == rebalance_date]
-                        next_group = merged_data[merged_data['Date'] == next_rebalance_date][['Ticker', 'Close']].rename(columns={'Close': 'Close_future'})
-
-                        if len(group) < 10 or next_group.empty:
-                            continue
-
-                        group = group.merge(next_group, on='Ticker', how='inner')
-                        if len(group) < 10:
-                            continue
-
-                        group['HoldingReturn'] = group['Close_future'] / group['Close'] - 1
-                        group = group.sort_values([factor, 'Ticker'], ascending=[False, True])
-                        n_stocks = len(group)
-                        top_n = max(1, int(n_stocks * quantile))
-                        bottom_n = max(1, int(n_stocks * quantile))
-                        long_portfolio = group.head(top_n)
-                        short_portfolio = group.tail(bottom_n)
-                        long_return = long_portfolio['HoldingReturn'].mean()
-                        short_return = short_portfolio['HoldingReturn'].mean()
-                        factor_return = long_return - short_return - (2 * transaction_cost)
-                        holding_days = max(1, len(pd.bdate_range(rebalance_date, next_rebalance_date)) - 1)
-                        factor_returns.append({'Date': rebalance_date, 'FactorReturn': factor_return, 'HoldingDays': holding_days})
-                        holding_periods.append(holding_days)
-
-                    if not factor_returns:
-                        append_status(log=f"{factor} 리밸런싱 구간에서 수익률을 계산할 수 없습니다.")
-                        continue
-
-                    factor_returns_df = pd.DataFrame(factor_returns).sort_values('Date').reset_index(drop=True)
-                    returns = factor_returns_df['FactorReturn'].values
-                    nav = np.concatenate(([1.0], np.cumprod(1 + returns)))
-
-                    cumulative_returns = []
-                    if not factor_returns_df.empty:
-                        first_date = factor_returns_df['Date'].iloc[0]
-                        cumulative_returns.append({
-                            'date': first_date.strftime('%Y-%m-%d'),
-                            'value': 0.0
-                        })
-                        cumulative_returns.extend(
-                            {
-                                'date': date.strftime('%Y-%m-%d'),
-                                'value': float(nav_val - 1.0)
-                            }
-                            for date, nav_val in zip(factor_returns_df['Date'], nav[1:])
+                    performance_data = merged_data[['Date', 'Ticker', 'Open', 'Close', factor]]
+                    try:
+                        metrics = calculate_factor_performance(
+                            performance_data,
+                            factor_col=factor,
+                            quantile=quantile,
+                            transaction_cost=transaction_cost,
+                            rebalancing_frequency=rebalancing_frequency,
+                            top_count=None
                         )
+                    except ValueError as exc:
+                        append_status(log=f"{factor} 계산 불가: {exc}")
+                        continue
 
-                    periods = np.array(holding_periods, dtype=float)
-                    cumulative_days = np.cumsum(periods) if len(periods) else np.array([])
-                    with np.errstate(divide='ignore', invalid='ignore'):
-                        rolling_cagr = np.power(np.maximum(nav[1:], 1e-12), 252 / cumulative_days) - 1 if len(cumulative_days) else np.array([])
-                    cagr_series = [
-                        {
-                            'date': date.strftime('%Y-%m-%d'),
-                            'value': float(val)
-                        }
-                        for date, val in zip(factor_returns_df['Date'], rolling_cagr)
-                    ]
-
-                    total_return = nav[-1] - 1 if len(nav) else 0.0
-                    total_holding_days = np.sum(holding_periods) if holding_periods else 0
-                    years = total_holding_days / 252 if total_holding_days else 0
-                    cagr = (nav[-1]) ** (1 / years) - 1 if years > 0 and nav[-1] > 0 else 0.0
-
-                    if len(returns):
-                        return_std = returns.std(ddof=0)
-                        mean_return = returns.mean()
-                        periods_per_year = (252 / (np.mean(holding_periods) if holding_periods else 1))
-                        sharpe = mean_return / return_std * np.sqrt(periods_per_year) if return_std > 0 else 0.0
-                        downside = returns[returns < 0]
-                        downside_std = downside.std(ddof=0) if len(downside) else 0.0
-                        sortino = mean_return / downside_std * np.sqrt(periods_per_year) if downside_std > 0 else 0.0
-                        win_rate = float((returns > 0).mean())
-                        volatility = return_std * np.sqrt(periods_per_year) if return_std > 0 else 0.0
-                    else:
-                        sharpe = 0.0
-                        sortino = 0.0
-                        win_rate = 0.0
-                        volatility = 0.0
-
-                    cumulative_curve = nav
-                    running_max = np.maximum.accumulate(cumulative_curve)
-                    drawdown = (cumulative_curve - running_max) / running_max
-                    max_drawdown = float(drawdown.min()) if len(drawdown) else 0.0
-
-                    ic_values = []
-                    for date, group in merged_data.groupby('Date'):
-                        if len(group) < 10:
-                            continue
-                        valid_data = group[[factor, 'NextDayReturn']].dropna()
-                        if len(valid_data) > 5:
-                            ic = valid_data[factor].corr(valid_data['NextDayReturn'])
-                            if pd.notna(ic):
-                                ic_values.append(ic)
-                    ic_mean = float(np.mean(ic_values)) if ic_values else 0.0
-
-                    results_dict[factor] = {
-                        'cagr': float(cagr),
-                        'sharpe_ratio': float(sharpe),
-                        'sortino_ratio': float(sortino),
-                        'max_drawdown': float(max_drawdown),
-                        'ic_mean': float(ic_mean),
-                        'win_rate': float(win_rate),
-                        'volatility': float(volatility),
-                        'total_return': float(total_return),
-                        'cumulative_returns': cumulative_returns,
-                        'cagr_series': cagr_series,
+                    processed_metrics = {
+                        key: (
+                            float(value)
+                            if isinstance(value, (np.floating, np.integer))
+                            else value
+                        )
+                        for key, value in metrics.items()
                     }
+                    results_dict[factor] = processed_metrics
 
-                    logger.info("팩터 %s 백테스트 완료: CAGR %.4f, Sharpe %.4f", factor, cagr, sharpe)
-                    append_status(log=f"{factor} 완료 (CAGR {(cagr*100):.2f}% / Sharpe {sharpe:.2f})")
+                    metric_cagr = float(processed_metrics.get('cagr', 0.0))
+                    metric_sharpe = float(processed_metrics.get('sharpe_ratio', 0.0))
+                    logger.info("팩터 %s 백테스트 완료: CAGR %.4f, Sharpe %.4f", factor, metric_cagr, metric_sharpe)
+                    append_status(log=f"{factor} 완료 (CAGR {(metric_cagr*100):.2f}% / Sharpe {metric_sharpe:.2f})")
 
                 if not results_dict:
                     raise RuntimeError('계산된 백테스트 결과가 없습니다.')
@@ -1920,7 +1948,7 @@ def backtest_ga_results(task_id):
 
                     factor_df = pd.concat(factor_frames, ignore_index=True)
                     merged = pd.merge(
-                        price_data[['Date', 'Ticker', 'Close']],
+                        price_data[['Date', 'Ticker', 'Open', 'Close']],
                         factor_df,
                         on=['Date', 'Ticker'],
                         how='inner'
@@ -2290,6 +2318,9 @@ def get_ticker_list():
         with open(universe_file, 'r') as f:
             universe_data = json.load(f)
         
+        if 'S&P500' not in universe_data:
+            universe_data = ['S&P500'] + universe_data
+        
         return jsonify({
             'success': True,
             'tickers': universe_data,
@@ -2298,6 +2329,126 @@ def get_ticker_list():
         
     except Exception as e:
         logger.error(f"티커 목록 조회 오류: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/data/ticker-performance', methods=['POST'])
+def get_ticker_performance():
+    """선택 종목의 기간별 누적 수익률과 핵심 지표를 계산합니다."""
+    try:
+        payload = request.get_json() or {}
+        raw_tickers = payload.get('tickers', [])
+
+        if not isinstance(raw_tickers, list):
+            return jsonify({'error': 'tickers 필드는 배열이어야 합니다'}), 400
+
+        tickers: List[str] = []
+        for item in raw_tickers:
+            ticker = str(item).strip().upper()
+            if ticker and ticker not in tickers:
+                tickers.append(ticker)
+
+        if not tickers:
+            return jsonify({'error': '분석할 종목을 1개 이상 선택하세요'}), 400
+
+        if len(tickers) > 15:
+            return jsonify({'error': '한 번에 최대 15개 종목까지 분석할 수 있습니다'}), 400
+
+        start_date_str = payload.get('start_date') or '2000-01-01'
+        end_date_str = payload.get('end_date') or datetime.now().strftime('%Y-%m-%d')
+
+        try:
+            start_dt = pd.to_datetime(start_date_str)
+            end_dt = pd.to_datetime(end_date_str)
+        except Exception:
+            return jsonify({'error': 'start_date 또는 end_date 형식이 올바르지 않습니다'}), 400
+
+        if start_dt > end_dt:
+            return jsonify({'error': 'start_date는 end_date보다 앞서야 합니다'}), 400
+
+        price_file = os.path.join(PROJECT_ROOT, 'database', 'sp500_interpolated.csv')
+        if not os.path.exists(price_file):
+            return jsonify({'error': '주가 데이터 파일을 찾을 수 없습니다'}), 404
+
+        price_cols = ['Date', 'Ticker', 'Close']
+        price_df = pd.read_csv(price_file, usecols=price_cols, parse_dates=['Date'])
+        price_df['Ticker'] = price_df['Ticker'].astype(str).str.upper()
+
+        date_mask = (price_df['Date'] >= start_dt) & (price_df['Date'] <= end_dt)
+        window_df = price_df[date_mask].copy()
+
+        actual_tickers = [ticker for ticker in tickers if ticker != 'S&P500']
+        filtered_df = window_df[window_df['Ticker'].isin(actual_tickers)].copy()
+
+        metrics_list: List[Dict[str, Any]] = []
+        series_map: Dict[str, Dict[str, float]] = {}
+        missing_tickers: List[str] = []
+
+        for ticker in tickers:
+            if ticker == 'S&P500':
+                try:
+                    index_df = (
+                        window_df[['Date', 'Close']]
+                        .dropna()
+                        .groupby('Date')['Close']
+                        .mean()
+                        .reset_index()
+                    )
+                    if index_df.empty:
+                        missing_tickers.append(ticker)
+                        continue
+                    series_points, metrics = calculate_ticker_performance_metrics(index_df)
+                except Exception as exc:
+                    logger.warning("S&P500 누적 수익률 계산 실패: %s", exc)
+                    metrics_list.append({'ticker': ticker, 'error': str(exc)})
+                    continue
+            else:
+                ticker_df = filtered_df[filtered_df['Ticker'] == ticker].copy()
+                if ticker_df.empty:
+                    missing_tickers.append(ticker)
+                    continue
+
+                try:
+                    series_points, metrics = calculate_ticker_performance_metrics(ticker_df)
+                except Exception as exc:
+                    logger.warning("티커 %s 성과 계산 실패: %s", ticker, exc)
+                    metrics_list.append({'ticker': ticker, 'error': str(exc)})
+                    continue
+
+            metrics_list.append({'ticker': ticker, **metrics})
+            for date, value in series_points:
+                date_str = date.strftime('%Y-%m-%d')
+                if date_str not in series_map:
+                    series_map[date_str] = {}
+                series_map[date_str][ticker] = value
+
+        if not metrics_list:
+            return jsonify({
+                'success': False,
+                'error': '선택한 종목에 대한 데이터를 찾을 수 없습니다',
+                'missing_tickers': missing_tickers,
+            }), 404
+
+        combined_series: List[Dict[str, Any]] = []
+        for date_str in sorted(series_map.keys()):
+            row: Dict[str, Any] = {'date': date_str}
+            for ticker in tickers:
+                row[ticker] = series_map[date_str].get(ticker)
+            combined_series.append(row)
+
+        return jsonify({
+            'success': True,
+            'series': combined_series,
+            'metrics': metrics_list,
+            'date_range': {
+                'start': start_dt.strftime('%Y-%m-%d'),
+                'end': end_dt.strftime('%Y-%m-%d'),
+            },
+            'missing_tickers': missing_tickers,
+        })
+
+    except Exception as e:
+        logger.error("종목 성과 분석 오류: %s", e, exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/portfolio/stocks', methods=['POST'])
@@ -2468,7 +2619,7 @@ def get_portfolio_performance():
             alpha_file = 'database/sp500_with_alphas.csv'
             
             # 필요한 컬럼만 로드
-            price_cols = ['Date', 'Ticker', 'Close']
+            price_cols = ['Date', 'Ticker', 'Open', 'Close']
             alpha_cols = ['Date', 'Ticker', alpha_factor]
             
             # 데이터 로드 (일관된 결과를 위해 매번 새로 로드)
@@ -2491,19 +2642,9 @@ def get_portfolio_performance():
             
             if len(merged_data) == 0:
                 raise Exception("병합된 데이터가 없습니다")
-            
-            # NextDayReturn 계산
-            merged_data = merged_data.sort_values(['Ticker', 'Date'])
-            merged_data['NextDayReturn'] = merged_data.groupby('Ticker')['Close'].shift(-1) / merged_data['Close'] - 1
-            
-            # 결측값 제거
-            merged_data = merged_data.dropna(subset=[alpha_factor, 'NextDayReturn'])
-            
-            if len(merged_data) == 0:
-                raise Exception("유효한 데이터가 없습니다")
-            
+
             metrics = calculate_factor_performance(
-                merged_data[['Date', 'Ticker', 'Close', alpha_factor]],
+                merged_data[['Date', 'Ticker', 'Open', 'Close', alpha_factor]],
                 factor_col=alpha_factor,
                 quantile=quantile,
                 transaction_cost=transaction_cost,

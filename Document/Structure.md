@@ -49,7 +49,7 @@
 │       │   │   └── Auth/           # 인증
 │       │   │       └── Auth.tsx           # 로그인
 │       │   ├── pages/             # 페이지
-│       │   │   ├── Dashboard.tsx          # 대시보드
+│       │   │   ├── Dashboard.tsx          # 대시보드 (자산/알파/보유주식 탭)
 │       │   │   ├── Backtest.tsx           # 백테스트
 │       │   │   ├── Portfolio.tsx          # 포트폴리오
 │       │   │   ├── AlphaPool.tsx          # 알파 풀 (GA)
@@ -104,11 +104,17 @@
 - **백테스트 시스템**: `database/backtest_system.py`
 - **최적화 백테스트**: `database/optimized_backtest.py`
 - **간단 백테스트**: `database/simple_backtest.py`
+- **체결 시점 모델**: 신호 계산일(t)의 데이터를 사용해 t+1 거래일 시가에 진입하고, 다음 리밸런싱 시점 시가(Open-to-Open)에서 청산하여 동시성 오류를 방지.
 
 #### 💼 포트폴리오 관리 (Portfolio Management)
 - **포트폴리오 구성**: `frontend/src/pages/Portfolio.tsx`
 - **실제 데이터 연동**: `/api/csv/user/portfolio`, `/api/csv/user/investment`, `/api/csv/user/transactions`
 - **성과 분석**: 백엔드 API 통합
+
+#### 📊 대시보드 자산 분석 (Dashboard Asset Insight)
+- **내 자산 한눈에 보기**: 다중 종목을 선택해 기간별 누적 수익률을 비교하는 차트와 종목별 핵심 지표(CAGR, Sharpe, Sortino, MDD, Win Rate, Volatility)를 제공.
+- **설정 패널**: 우측 세로 패널에서 기간(기본값 `2000-01-01 ~ latest`)을 지정하고 `/api/data/ticker-list`로 종목을 검색·다중 선택한 뒤 `/api/data/ticker-performance` 호출로 분석 실행.
+- **시각화**: 좌측 GlassCard 영역에 Recharts 기반 멀티 라인 차트를 배치하고, 범례/라인 클릭 시 해당 종목만 강조되며 툴팁은 날짜·종목·수익률·색상을 동시에 노출.
 
 #### 🤖 AI 에이전트 (AI Agents)
 - **멀티 에이전트**: `Langchain/Langchain.py`

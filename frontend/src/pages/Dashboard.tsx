@@ -7,20 +7,28 @@ import {
   ArcElement,
   Tooltip as ChartTooltip,
   Legend,
-  CategoryScale,
-  LinearScale,
-  BarElement,
 } from 'chart.js';
-import { Doughnut, Bar } from 'react-chartjs-2';
+import { Doughnut } from 'react-chartjs-2';
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip as RechartsTooltip,
+} from 'recharts';
+import type { TooltipProps } from 'recharts';
+import dayjs, { Dayjs } from 'dayjs';
 import { useAuth } from '../contexts/AuthContext';
-import { Button, Input, Modal, Form, message, Popconfirm, Select, Tag, Tooltip, Pagination } from 'antd';
+import { Button, Input, Modal, Form, message, Popconfirm, Select, Tag, Tooltip, Pagination, DatePicker, Spin, Empty } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { GlassButton } from '../components/common/GlassButton';
-import { StoredAlpha, PortfolioStock } from '../types';
-import { fetchUserAlphas, saveUserAlphas as saveUserAlphasApi, deleteUserAlpha as deleteUserAlphaApi } from '../services/api';
+import { StoredAlpha, PortfolioStock, TickerPerformanceMetric, TickerPerformanceSeriesEntry } from '../types';
+import { fetchUserAlphas, saveUserAlphas as saveUserAlphasApi, deleteUserAlpha as deleteUserAlphaApi, getTickerPerformance, getTickerList } from '../services/api';
 
 // Chart.js 등록
-ChartJS.register(ArcElement, ChartTooltip, Legend, CategoryScale, LinearScale, BarElement);
+ChartJS.register(ArcElement, ChartTooltip, Legend);
 
 const defaultAlphaSummary = {
   shared_count: 0,
@@ -152,39 +160,6 @@ const CardsGrid = styled.div`
   }
 `;
 
-const AssetCard = styled(GlassCard)<{ $isPositive?: boolean }>`
-  display: flex;
-  flex-direction: column;
-  gap: ${theme.spacing.md};
-  padding: ${theme.spacing.xl};
-  background: ${props => props.$isPositive ? theme.colors.liquidGoldGradient : theme.colors.liquidGlass};
-  border: 1px solid ${props => props.$isPositive ? theme.colors.liquidGoldBorder : theme.colors.liquidGlassBorder};
-`;
-
-const CardLabel = styled.div`
-  font-size: ${theme.typography.fontSize.caption};
-  color: ${theme.colors.textSecondary};
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-`;
-
-const CardAmount = styled.div`
-  font-size: 2rem;
-  color: ${theme.colors.textPrimary};
-  font-weight: 700;
-  font-family: ${theme.typography.fontFamily.display};
-  line-height: 1.2;
-`;
-
-const CardChange = styled.div<{ $positive: boolean }>`
-  font-size: ${theme.typography.fontSize.body};
-  color: ${props => props.$positive ? theme.colors.accentGold : theme.colors.textSecondary};
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-`;
 
 const ChartsContainer = styled.div`
   display: grid;
@@ -210,40 +185,32 @@ const ChartTitle = styled.h3`
   font-weight: 600;
 `;
 
-const PeriodSelector = styled.div`
-  display: flex;
-  align-items: center;
-  gap: ${theme.spacing.lg};
-  margin-bottom: ${theme.spacing.lg};
-  flex-wrap: wrap;
-`;
+const AnalyzerLayout = styled.div`
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  grid-template-rows: auto auto;
+  grid-template-areas:
+    'chart settings'
+    'metrics metrics';
+  gap: ${theme.spacing.xl};
+  align-items: stretch;
 
-const PeriodLabel = styled.span`
-  color: ${theme.colors.textSecondary};
-  font-size: ${theme.typography.fontSize.body};
-  min-width: 60px;
-`;
-
-const PeriodToggle = styled.div`
-  display: flex;
-  gap: ${theme.spacing.sm};
-`;
-
-const PeriodButton = styled.button<{ $active: boolean }>`
-  padding: ${theme.spacing.sm} ${theme.spacing.lg};
-  background: ${props => props.$active ? theme.colors.accentGold : theme.colors.liquidGlass};
-  border: 1px solid ${props => props.$active ? theme.colors.accentGold : theme.colors.border};
-  border-radius: 8px;
-  color: ${props => props.$active ? '#000000' : theme.colors.textSecondary};
-  font-size: ${theme.typography.fontSize.body};
-  font-weight: ${props => props.$active ? 600 : 400};
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
-
-  &:hover {
-    background: ${props => props.$active ? theme.colors.accentGold : theme.colors.liquidGlassHover};
-    border-color: ${theme.colors.accentGold};
+  @media (max-width: 1200px) {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+    grid-template-areas:
+      'chart'
+      'settings'
+      'metrics';
   }
+`;
+
+const AnalyzerColumn = styled.div`
+  display: contents;
+`;
+
+const AnalyzerAside = styled.div`
+  display: contents;
 `;
 
 const DoughnutWrapper = styled.div`
@@ -254,26 +221,146 @@ const DoughnutWrapper = styled.div`
   justify-content: center;
 `;
 
-const DoughnutCenter = styled.div`
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  text-align: center;
-  pointer-events: none;
+const AnalyzerChartCard = styled(GlassCard)`
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.lg};
+  padding: ${theme.spacing.xl};
+  min-height: 420px;
+  grid-area: chart;
 `;
 
-const TotalLabel = styled.div`
-  font-size: ${theme.typography.fontSize.caption};
+const MetricsCard = styled(GlassCard)`
+  padding: ${theme.spacing.xl};
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.md};
+  grid-area: metrics;
+`;
+
+const SettingsPanel = styled(GlassCard)`
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.lg};
+  padding: ${theme.spacing.xl};
+  min-height: 100%;
+  grid-area: settings;
+  align-self: stretch;
+`;
+
+const SettingsSection = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.sm};
+`;
+
+const SettingsLabel = styled.span`
   color: ${theme.colors.textSecondary};
-  margin-bottom: 4px;
+  font-size: ${theme.typography.fontSize.caption};
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 `;
 
-const TotalAmount = styled.div`
-  font-size: ${theme.typography.fontSize.h2};
-  color: ${theme.colors.textPrimary};
-  font-weight: 700;
+const LegendList = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: ${theme.spacing.sm};
 `;
+
+const LegendItem = styled.button<{ $active: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  gap: ${theme.spacing.xs};
+  padding: ${theme.spacing.xs} ${theme.spacing.sm};
+  border-radius: 999px;
+  border: 1px solid ${(props) => (props.$active ? theme.colors.accentPrimary : theme.colors.liquidGlassBorder)};
+  background: ${(props) => (props.$active ? 'rgba(139, 170, 255, 0.12)' : theme.colors.liquidGlass)};
+  color: ${theme.colors.textPrimary};
+  cursor: pointer;
+  transition: ${theme.transitions.normal};
+  font-size: ${theme.typography.fontSize.caption};
+
+  &:hover {
+    border-color: ${theme.colors.accentPrimary};
+    transform: translateY(-1px);
+  }
+`;
+
+const LegendSwatch = styled.span`
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: block;
+`;
+
+const TooltipContainer = styled.div`
+  background: ${theme.colors.backgroundSecondary};
+  border: 1px solid ${theme.colors.liquidGlassBorder};
+  border-radius: 12px;
+  padding: ${theme.spacing.sm} ${theme.spacing.md};
+  color: ${theme.colors.textPrimary};
+  box-shadow: ${theme.shadows.glass};
+`;
+
+const TooltipRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: ${theme.spacing.sm};
+  font-size: ${theme.typography.fontSize.caption};
+`;
+
+const TooltipValue = styled.span`
+  font-weight: 600;
+`;
+
+const MetricsTable = styled.table`
+  width: 100%;
+  border-collapse: collapse;
+`;
+
+const MetricsHeadCell = styled.th`
+  text-align: left;
+  padding: ${theme.spacing.xs} ${theme.spacing.sm};
+  color: ${theme.colors.textSecondary};
+  font-size: ${theme.typography.fontSize.caption};
+  font-weight: 600;
+  border-bottom: 1px solid ${theme.colors.liquidGlassBorder};
+`;
+
+const MetricsRow = styled.tr`
+  &:not(:last-child) {
+    border-bottom: 1px solid ${theme.colors.liquidGlassBorder};
+  }
+`;
+
+const MetricsCell = styled.td`
+  padding: ${theme.spacing.sm};
+  color: ${theme.colors.textPrimary};
+  font-size: ${theme.typography.fontSize.caption};
+  white-space: nowrap;
+`;
+
+const MetricsTicker = styled.span`
+  font-weight: 600;
+  color: ${theme.colors.textPrimary};
+`;
+
+const hashStringToHue = (input: string): number => {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = input.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return Math.abs(hash) % 360;
+};
+
+const colorFromTicker = (ticker: string): string => {
+  const hue = hashStringToHue(ticker);
+  return `hsl(${hue}, 70%, 60%)`;
+};
+
+
 
 const StockListHeader = styled.div`
   display: grid;
@@ -323,20 +410,161 @@ const TransactionItem = styled.div`
 export const Dashboard: React.FC = () => {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState(0);
-  const [period, setPeriod] = useState<'1년' | '30일'>('1년');
-  const [dashboardData, setDashboardData] = useState({
-    cash: 0,
-    stocks: 0,
-    total: 0,
-    changes: {
-      cash: 0,
-      cash_percent: 0,
-      stocks: 0,
-      stocks_percent: 0,
-    },
-  });
   const [portfolioData, setPortfolioData] = useState<PortfolioStock[]>([]);
   const [loading, setLoading] = useState(true);
+  const [tickerOptions, setTickerOptions] = useState<string[]>([]);
+  const [selectedTickers, setSelectedTickers] = useState<string[]>(['S&P500']);
+  const [tickerColors, setTickerColors] = useState<Record<string, string>>({});
+  const [highlightedTicker, setHighlightedTicker] = useState<string | null>(null);
+  const [performanceSeries, setPerformanceSeries] = useState<TickerPerformanceSeriesEntry[]>([]);
+  const [performanceMetrics, setPerformanceMetrics] = useState<TickerPerformanceMetric[]>([]);
+  const [missingTickers, setMissingTickers] = useState<string[]>([]);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [performanceLoading, setPerformanceLoading] = useState(false);
+  const [autoAnalyzeQueued, setAutoAnalyzeQueued] = useState(false);
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([dayjs('2000-01-01'), dayjs()]);
+
+  const ensureTickerColors = useCallback((tickers: string[]) => {
+    setTickerColors((prev) => {
+      const next = { ...prev };
+      tickers.forEach((ticker) => {
+        if (!next[ticker]) {
+          next[ticker] = colorFromTicker(ticker);
+        }
+      });
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const loadTickerUniverse = async () => {
+      try {
+        const response = await getTickerList();
+        if (response?.success && Array.isArray(response.tickers)) {
+          const normalized = response.tickers.map((ticker: string) => ticker.toUpperCase());
+          const withIndex = normalized.includes('S&P500')
+            ? normalized
+            : ['S&P500', ...normalized];
+          const uniqueOptions = Array.from(new Set<string>(withIndex));
+          setTickerOptions(uniqueOptions);
+          setAutoAnalyzeQueued(true);
+        }
+      } catch (error) {
+        console.error('티커 목록 로드 실패:', error);
+      }
+    };
+
+    loadTickerUniverse();
+  }, []);
+
+  useEffect(() => {
+    if (selectedTickers.length > 0) {
+      ensureTickerColors(selectedTickers);
+    }
+  }, [selectedTickers, ensureTickerColors]);
+
+  const formatPercent = useCallback((value?: number, digits = 2) => {
+    if (value === undefined || value === null || Number.isNaN(value)) {
+      return '-';
+    }
+    return `${(value * 100).toFixed(digits)}%`;
+  }, []);
+
+  const formatNumber = useCallback((value?: number, digits = 2) => {
+    if (value === undefined || value === null || Number.isNaN(value)) {
+      return '-';
+    }
+    return value.toFixed(digits);
+  }, []);
+
+  const renderTooltip = useCallback(
+    ({ active, payload, label }: TooltipProps<number, string>) => {
+      if (!active || !payload || payload.length === 0) {
+        return null;
+      }
+
+      return (
+        <TooltipContainer>
+          <div style={{ fontWeight: 600, marginBottom: theme.spacing.xs }}>{label}</div>
+          {payload.map((entry) => {
+            if (entry.value === undefined || entry.value === null) {
+              return null;
+            }
+            return (
+              <TooltipRow key={entry.dataKey as string}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: theme.spacing.xs }}>
+                  <LegendSwatch style={{ background: entry.color }} />
+                  <span>{entry.dataKey}</span>
+                </div>
+                <TooltipValue>{formatPercent(Number(entry.value))}</TooltipValue>
+              </TooltipRow>
+            );
+          })}
+        </TooltipContainer>
+      );
+    },
+    [formatPercent]
+  );
+
+  const handleLegendToggle = useCallback((ticker: string) => {
+    setHighlightedTicker((prev) => (prev === ticker ? null : ticker));
+  }, []);
+
+  const handleAnalyze = useCallback(async () => {
+    if (!selectedTickers.length) {
+      message.warning('분석할 종목을 선택해주세요.');
+      return;
+    }
+
+    setPerformanceLoading(true);
+    setAnalysisError(null);
+
+    try {
+      ensureTickerColors(selectedTickers);
+      const [start, end] = dateRange;
+      const response = await getTickerPerformance({
+        tickers: selectedTickers,
+        start_date: start.format('YYYY-MM-DD'),
+        end_date: end.format('YYYY-MM-DD'),
+      });
+
+      if (!response?.success) {
+        setPerformanceSeries([]);
+        setPerformanceMetrics([]);
+        setMissingTickers(response?.missing_tickers || []);
+        setAnalysisError(response?.error || '종목 성과 분석에 실패했습니다.');
+      } else {
+        setPerformanceSeries(Array.isArray(response.series) ? response.series : []);
+        setPerformanceMetrics(Array.isArray(response.metrics) ? response.metrics : []);
+        setMissingTickers(Array.isArray(response.missing_tickers) ? response.missing_tickers : []);
+        setHighlightedTicker(null);
+      }
+    } catch (error) {
+      console.error('종목 성과 분석 실패:', error);
+      setPerformanceSeries([]);
+      setPerformanceMetrics([]);
+      setMissingTickers([]);
+      setAnalysisError('종목 성과 분석 중 오류가 발생했습니다.');
+    } finally {
+      setPerformanceLoading(false);
+    }
+  }, [selectedTickers, ensureTickerColors, dateRange]);
+
+  useEffect(() => {
+    if (autoAnalyzeQueued && selectedTickers.length > 0) {
+      handleAnalyze();
+      setAutoAnalyzeQueued(false);
+    }
+  }, [autoAnalyzeQueued, selectedTickers, handleAnalyze]);
+
+  useEffect(() => {
+    if (selectedTickers.length === 0 && !performanceLoading) {
+      setPerformanceSeries([]);
+      setPerformanceMetrics([]);
+      setMissingTickers([]);
+      setAnalysisError(null);
+    }
+  }, [selectedTickers.length, performanceLoading]);
 
   // 알파 관리 상태
   const [privateAlphas, setPrivateAlphas] = useState<StoredAlpha[]>([]);
@@ -401,7 +629,7 @@ export const Dashboard: React.FC = () => {
       console.error('알파 저장 실패:', error);
       message.error('알파 저장에 실패했습니다.');
     }
-  }, [user, editingAlpha]);
+  }, [user, editingAlpha, alphaForm]);
 
   const handleDeleteAlpha = useCallback(async (alphaId: string) => {
     if (!user) {
@@ -451,53 +679,27 @@ export const Dashboard: React.FC = () => {
       try {
         setLoading(true);
 
-        // 투자 데이터 로드
-        const investmentResponse = await fetch('/api/csv/user/investment', {
-          credentials: 'include'
+        const portfolioResponse = await fetch('/api/csv/user/portfolio', {
+          credentials: 'include',
         });
 
-        if (investmentResponse.ok) {
-          const investmentData = await investmentResponse.json();
-          const investment = investmentData.investment_data;
+        if (portfolioResponse.ok) {
+          const portfolioResult = await portfolioResponse.json();
+          const portfolioItems: PortfolioStock[] = portfolioResult.portfolio || [];
+          setPortfolioData(portfolioItems);
 
-          // 포트폴리오 데이터 로드
-          const portfolioResponse = await fetch('/api/csv/user/portfolio', {
-            credentials: 'include'
-          });
+          if (portfolioItems.length > 0 && selectedTickers.length === 0) {
+            const defaultTickers = portfolioItems
+              .map((stock) => stock.ticker)
+              .filter((ticker): ticker is string => typeof ticker === 'string' && ticker.trim().length > 0)
+              .slice(0, 4);
 
-          if (portfolioResponse.ok) {
-            const portfolioResult = await portfolioResponse.json();
-            setPortfolioData(portfolioResult.portfolio || []);
+            if (defaultTickers.length > 0) {
+              setSelectedTickers(defaultTickers);
+              ensureTickerColors(defaultTickers);
+              setAutoAnalyzeQueued(true);
+            }
           }
-
-          // 거래 내역 로드 (알파 관리에서는 사용하지 않음)
-          // const transactionResponse = await fetch('/api/csv/user/transactions', {
-          //   credentials: 'include'
-          // });
-
-          // if (transactionResponse.ok) {
-          //   const transactionResult = await transactionResponse.json();
-          //   setTransactionData(transactionResult.transactions || []);
-          // }
-
-          // 자산 데이터 설정
-          const totalAssets = parseFloat(investment.total_assets) || 0;
-          const cash = parseFloat(investment.cash) || 0;
-          const stocks = parseFloat(investment.stock_value) || 0;
-
-          // 변동 데이터 계산 (실제로는 백엔드에서 계산되어야 함)
-          // 임시로 하드코딩된 변동 데이터 사용
-          setDashboardData({
-            cash,
-            stocks,
-            total: totalAssets,
-            changes: {
-              cash: -150000,
-              cash_percent: -0.6,
-              stocks: 9256265,
-              stocks_percent: 28.8,
-            },
-          });
         }
       } catch (error) {
         console.error('대시보드 데이터 로드 실패:', error);
@@ -507,186 +709,233 @@ export const Dashboard: React.FC = () => {
     };
 
     loadDashboardData();
-    loadAlphas(); // 알파 데이터 로드
-  }, [user, loadAlphas]);
+    loadAlphas();
+  }, [user, loadAlphas, ensureTickerColors, selectedTickers.length]);
 
-  // 도넛 차트 데이터 (실제 데이터 기반)
-  const doughnutData = {
-    labels: ['주식', '현금'],
-    datasets: [
-      {
-        data: [
-          dashboardData.total > 0 ? (dashboardData.stocks / dashboardData.total) * 100 : 0,
-          dashboardData.total > 0 ? (dashboardData.cash / dashboardData.total) * 100 : 0
-        ],
-        backgroundColor: [
-          'rgba(212, 175, 55, 0.8)',
-          'rgba(232, 234, 237, 0.6)',
-        ],
-        borderColor: [
-          'rgba(184, 134, 11, 1)',
-          'rgba(255, 255, 255, 0.3)',
-        ],
-        borderWidth: 2,
-      },
-    ],
+
+  const renderAssetOverview = () => {
+    const hasSeries = performanceSeries.length > 0 && selectedTickers.length > 0;
+    const hasMetrics = performanceMetrics.length > 0;
+
+    return (
+      <AnalyzerLayout>
+        <AnalyzerColumn>
+          <AnalyzerChartCard>
+            <ChartTitle>종목 누적 수익률 비교</ChartTitle>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: theme.spacing.md }}>
+              {missingTickers.length > 0 && (
+                <div
+                  style={{
+                    fontSize: theme.typography.fontSize.caption,
+                    color: theme.colors.textSecondary,
+                    background: theme.colors.liquidGlass,
+                    border: `1px solid ${theme.colors.liquidGlassBorder}`,
+                    borderRadius: theme.borderRadius.lg,
+                    padding: `${theme.spacing.sm} ${theme.spacing.md}`,
+                  }}
+                >
+                  데이터가 누락된 종목: {missingTickers.join(', ')}
+                </div>
+              )}
+              <div style={{ height: 380 }}>
+                {performanceLoading ? (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      height: '100%',
+                    }}
+                  >
+                    <Spin tip="수익률을 계산하는 중입니다..." />
+                  </div>
+                ) : hasSeries ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={performanceSeries}>
+                      <CartesianGrid stroke="rgba(255, 255, 255, 0.08)" strokeDasharray="3 3" />
+                      <XAxis
+                        dataKey="date"
+                        tick={{ fill: theme.colors.textSecondary }}
+                        minTickGap={32}
+                        tickLine={false}
+                      />
+                      <YAxis
+                        tick={{ fill: theme.colors.textSecondary }}
+                        tickFormatter={(value: number) => `${(value * 100).toFixed(0)}%`}
+                        tickLine={false}
+                        width={60}
+                      />
+                      <RechartsTooltip content={renderTooltip} />
+                      {selectedTickers.map((ticker) => {
+                        const color = tickerColors[ticker] || colorFromTicker(ticker);
+                        const isMuted = highlightedTicker !== null && highlightedTicker !== ticker;
+                        return (
+                          <Line
+                            key={ticker}
+                            type="monotone"
+                            dataKey={ticker}
+                            stroke={color}
+                            strokeWidth={highlightedTicker === ticker ? 3 : 2.2}
+                            dot={false}
+                            strokeOpacity={isMuted ? 0.2 : 1}
+                            activeDot={{ r: highlightedTicker === ticker ? 5 : 4 }}
+                            connectNulls
+                            onClick={() => handleLegendToggle(ticker)}
+                          />
+                        );
+                      })}
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      height: '100%',
+                      color: theme.colors.textSecondary,
+                    }}
+                  >
+                    {analysisError || '종목 분석을 실행하면 기간별 누적 수익률을 확인할 수 있습니다.'}
+                  </div>
+                )}
+              </div>
+
+              {analysisError && (
+                <div style={{ color: theme.colors.error, fontSize: theme.typography.fontSize.caption }}>
+                  {analysisError}
+                </div>
+              )}
+
+              {selectedTickers.length > 0 && (
+                <LegendList>
+                  {selectedTickers.map((ticker) => (
+                    <LegendItem
+                      key={ticker}
+                      type="button"
+                      $active={!highlightedTicker || highlightedTicker === ticker}
+                      onClick={() => handleLegendToggle(ticker)}
+                      style={{ opacity: missingTickers.includes(ticker) ? 0.4 : 1 }}
+                    >
+                      <LegendSwatch style={{ background: tickerColors[ticker] || colorFromTicker(ticker) }} />
+                      <span>{ticker}</span>
+                    </LegendItem>
+                  ))}
+                </LegendList>
+              )}
+            </div>
+          </AnalyzerChartCard>
+
+          <MetricsCard>
+            <ChartTitle>종목별 핵심 지표</ChartTitle>
+            {performanceLoading ? (
+              <div style={{ display: 'flex', justifyContent: 'center', padding: theme.spacing.lg }}>
+                <Spin />
+              </div>
+            ) : hasMetrics ? (
+              <MetricsTable>
+                <thead>
+                  <tr>
+                    <MetricsHeadCell>종목</MetricsHeadCell>
+                    <MetricsHeadCell>누적 수익률</MetricsHeadCell>
+                    <MetricsHeadCell>CAGR</MetricsHeadCell>
+                    <MetricsHeadCell>Sharpe</MetricsHeadCell>
+                    <MetricsHeadCell>Sortino</MetricsHeadCell>
+                    <MetricsHeadCell>MDD</MetricsHeadCell>
+                    <MetricsHeadCell>Win Rate</MetricsHeadCell>
+                    <MetricsHeadCell>Volatility</MetricsHeadCell>
+                  </tr>
+                </thead>
+                <tbody>
+                  {performanceMetrics.map((metric) => {
+                    if (metric.error) {
+                      return (
+                        <MetricsRow key={metric.ticker}>
+                          <MetricsCell colSpan={8} style={{ color: theme.colors.textSecondary }}>
+                            {metric.ticker}: {metric.error}
+                          </MetricsCell>
+                        </MetricsRow>
+                      );
+                    }
+
+                    return (
+                      <MetricsRow key={metric.ticker}>
+                        <MetricsCell>
+                          <MetricsTicker>{metric.ticker}</MetricsTicker>
+                        </MetricsCell>
+                        <MetricsCell>{formatPercent(metric.total_return)}</MetricsCell>
+                        <MetricsCell>{formatPercent(metric.cagr)}</MetricsCell>
+                        <MetricsCell>{formatNumber(metric.sharpe_ratio)}</MetricsCell>
+                        <MetricsCell>{formatNumber(metric.sortino_ratio)}</MetricsCell>
+                        <MetricsCell>{formatPercent(metric.max_drawdown)}</MetricsCell>
+                        <MetricsCell>{formatPercent(metric.win_rate)}</MetricsCell>
+                        <MetricsCell>{formatPercent(metric.volatility)}</MetricsCell>
+                      </MetricsRow>
+                    );
+                  })}
+                </tbody>
+              </MetricsTable>
+            ) : (
+              <Empty description="분석 결과가 없습니다" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            )}
+          </MetricsCard>
+        </AnalyzerColumn>
+
+        <AnalyzerAside>
+          <SettingsPanel>
+            <ChartTitle>분석 설정</ChartTitle>
+            <SettingsSection>
+              <SettingsLabel>기간 선택</SettingsLabel>
+              <DatePicker.RangePicker
+                value={dateRange}
+                onChange={(values) => {
+                  if (values && values[0] && values[1]) {
+                    setDateRange([values[0], values[1]]);
+                  }
+                }}
+                allowClear={false}
+                format="YYYY-MM-DD"
+                style={{ width: '100%' }}
+              />
+            </SettingsSection>
+
+            <SettingsSection>
+              <SettingsLabel>종목 검색</SettingsLabel>
+              <Select
+                mode="multiple"
+                allowClear
+                showSearch
+                placeholder="종목코드를 선택하세요"
+                value={selectedTickers}
+                onChange={(value) => {
+                  setSelectedTickers(value);
+                  ensureTickerColors(value);
+                  setHighlightedTicker(null);
+                }}
+                filterOption={(input, option) =>
+                  String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+                }
+                options={tickerOptions.map((ticker) => ({ label: ticker, value: ticker }))}
+                style={{ width: '100%' }}
+              />
+            </SettingsSection>
+
+            <GlassButton
+              variant="primary"
+              onClick={handleAnalyze}
+              disabled={performanceLoading || selectedTickers.length === 0}
+            >
+              종목 분석
+            </GlassButton>
+
+            <div style={{ fontSize: theme.typography.fontSize.caption, color: theme.colors.textSecondary }}>
+              기간의 시작점을 0%로 정규화하여 종목별 누적 수익률을 비교합니다.
+            </div>
+          </SettingsPanel>
+        </AnalyzerAside>
+      </AnalyzerLayout>
+    );
   };
-
-  const doughnutOptions = {
-    responsive: true,
-    maintainAspectRatio: true,
-    cutout: '70%',
-    plugins: {
-      legend: {
-        position: 'bottom' as const,
-        labels: {
-          color: theme.colors.textPrimary,
-          font: {
-            size: 14,
-          },
-          padding: 20,
-        },
-      },
-      tooltip: {
-        backgroundColor: theme.colors.backgroundTertiary,
-        titleColor: theme.colors.textPrimary,
-        bodyColor: theme.colors.textSecondary,
-        borderColor: theme.colors.border,
-        borderWidth: 1,
-      },
-    },
-  };
-
-  // 바 차트 데이터 (흰색과 부드러운 금색 팔레트만 사용)
-  const barData = {
-    labels: [
-      '24-02', '24-03', '24-04', '24-05', '24-06',
-      '24-07', '24-08', '24-09', '24-10', '24-11',
-      '24-12', '25-01', '25-02'
-    ],
-    datasets: [
-      {
-        label: '주식',
-        data: [20000000, 22000000, 23000000, 25000000, 28000000, 30000000, 32000000, 35000000, 38000000, 40000000, 42000000, 45000000, 48000000],
-        backgroundColor: 'rgba(212, 175, 55, 0.8)',
-        borderColor: 'rgba(184, 134, 11, 1)',
-        borderWidth: 1,
-      },
-      {
-        label: '현금',
-        data: [10000000, 10500000, 11000000, 11500000, 12000000, 12500000, 13000000, 13200000, 13400000, 13500000, 13600000, 13700000, 13800000],
-        backgroundColor: 'rgba(232, 234, 237, 0.6)',
-        borderColor: 'rgba(255, 255, 255, 0.3)',
-        borderWidth: 1,
-      },
-    ],
-  };
-
-  const barOptions = {
-    responsive: true,
-    maintainAspectRatio: true,
-    scales: {
-      x: {
-        stacked: true,
-        grid: {
-          color: 'rgba(255, 255, 255, 0.05)',
-        },
-        ticks: {
-          color: theme.colors.textSecondary,
-          font: {
-            size: 11,
-          },
-        },
-      },
-      y: {
-        stacked: true,
-        grid: {
-          color: 'rgba(255, 255, 255, 0.05)',
-        },
-        ticks: {
-          color: theme.colors.textSecondary,
-          callback: function(value: any) {
-            return (value / 1000000) + 'M';
-          },
-        },
-      },
-    },
-    plugins: {
-      legend: {
-        position: 'top' as const,
-        align: 'end' as const,
-        labels: {
-          color: theme.colors.textPrimary,
-          font: {
-            size: 12,
-          },
-          padding: 15,
-          boxWidth: 15,
-        },
-      },
-      tooltip: {
-        backgroundColor: theme.colors.backgroundTertiary,
-        titleColor: theme.colors.textPrimary,
-        bodyColor: theme.colors.textSecondary,
-        borderColor: theme.colors.border,
-        borderWidth: 1,
-      },
-    },
-  };
-
-  const renderAssetOverview = () => (
-    <>
-      <CardsGrid>
-        <AssetCard>
-          <CardLabel>현금 자산</CardLabel>
-          <CardAmount>{dashboardData.cash.toLocaleString()} 원</CardAmount>
-          <CardChange $positive={dashboardData.changes.cash_percent > 0}>
-            {dashboardData.changes.cash_percent > 0 ? '▲' : '▼'} {Math.abs(dashboardData.changes.cash).toLocaleString()} 원 ({dashboardData.changes.cash_percent}%)
-          </CardChange>
-        </AssetCard>
-
-        <AssetCard $isPositive>
-          <CardLabel>주식 자산</CardLabel>
-          <CardAmount>{dashboardData.stocks.toLocaleString()} 원</CardAmount>
-          <CardChange $positive={dashboardData.changes.stocks_percent > 0}>
-            {dashboardData.changes.stocks_percent > 0 ? '▲' : '▼'} {Math.abs(dashboardData.changes.stocks).toLocaleString()} 원 ({dashboardData.changes.stocks_percent}%)
-          </CardChange>
-        </AssetCard>
-      </CardsGrid>
-
-      <PeriodSelector>
-        <PeriodLabel>기간:</PeriodLabel>
-        <PeriodToggle>
-          <PeriodButton $active={period === '1년'} onClick={() => setPeriod('1년')}>
-            1년
-          </PeriodButton>
-          <PeriodButton $active={period === '30일'} onClick={() => setPeriod('30일')}>
-            30일
-          </PeriodButton>
-        </PeriodToggle>
-      </PeriodSelector>
-
-      <ChartsContainer>
-        <ChartCard>
-          <ChartTitle>내 자산 분포</ChartTitle>
-          <DoughnutWrapper>
-            <Doughnut data={doughnutData} options={doughnutOptions} />
-            <DoughnutCenter>
-              <TotalLabel>총 자산</TotalLabel>
-              <TotalAmount>{(dashboardData.total / 10000).toLocaleString()}만원</TotalAmount>
-            </DoughnutCenter>
-          </DoughnutWrapper>
-        </ChartCard>
-
-        <ChartCard>
-          <ChartTitle>자산 성장 추이</ChartTitle>
-          <div style={{ height: '350px' }}>
-            <Bar data={barData} options={barOptions} />
-          </div>
-        </ChartCard>
-      </ChartsContainer>
-    </>
-  );
 
   const sortedPrivateAlphas = useMemo(() => {
     return [...privateAlphas].sort((a, b) => {
@@ -1135,7 +1384,7 @@ export const Dashboard: React.FC = () => {
     <DashboardContainer>
       <DynamicIslandNav>
         <DynamicIslandButton $active={activeTab === 0} onClick={() => setActiveTab(0)}>
-          내 자산 한눈에 보기
+          시장 수익률
         </DynamicIslandButton>
         <DynamicIslandButton $active={activeTab === 1} onClick={() => setActiveTab(1)}>
           알파 관리

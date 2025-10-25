@@ -112,6 +112,45 @@ POST /api/portfolio/performance
 }
 ```
 
+### 📊 데이터 API
+
+#### 종목 성과 분석
+```http
+POST /api/data/ticker-performance
+```
+**요청 본문**:
+```json
+{
+  "tickers": ["AAPL", "MSFT", "GOOGL"],
+  "start_date": "2000-01-01",
+  "end_date": "2024-12-31"
+}
+```
+
+**응답 예시**:
+```json
+{
+  "success": true,
+  "series": [
+    {"date": "2000-01-03", "AAPL": 0.0, "MSFT": 0.0, "GOOGL": 0.0},
+    {"date": "2000-01-04", "AAPL": 0.012, "MSFT": -0.003, "GOOGL": 0.006}
+  ],
+  "metrics": [
+    {
+      "ticker": "AAPL",
+      "cagr": 0.158,
+      "sharpe_ratio": 1.42,
+      "sortino_ratio": 2.11,
+      "max_drawdown": -0.46,
+      "win_rate": 0.55,
+      "volatility": 0.27,
+      "total_return": 5.42
+    }
+  ]
+}
+```
+- **설명**: 기간 내 종목별 종가를 기반으로 누적 수익률을 0%에서 시작하도록 정규화하고, 백테스트 페이지와 동일한 핵심 지표(CAGR, Sharpe, Sortino, MDD, Win Rate, Volatility, Total Return)를 반환합니다.
+
 ### 🤖 AI 에이전트 API
 
 #### 채팅

@@ -184,6 +184,24 @@ export interface ChartDataPoint {
   label?: string;
 }
 
+export interface TickerPerformanceSeriesEntry {
+  date: string;
+  [ticker: string]: number | string | null;
+}
+
+export interface TickerPerformanceMetric {
+  ticker: string;
+  cagr?: number;
+  sharpe_ratio?: number;
+  sortino_ratio?: number;
+  max_drawdown?: number;
+  win_rate?: number;
+  volatility?: number;
+  total_return?: number;
+  ic_mean?: number | null;
+  error?: string;
+}
+
 // ⚙️ API 응답
 export interface ApiResponse<T = any> {
   success: boolean;

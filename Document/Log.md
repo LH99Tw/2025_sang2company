@@ -1135,3 +1135,13 @@ allowed_fields = ['name', 'email', 'profile_emoji']
 [29](20251019):Ollama 호출 안정화 및 AlphaIncubator 스크롤 개선
     - `call_local_llm`에 `num_ctx`, `num_predict`, `top_p`를 지정하고 MCTS 탐색 횟수를 2회로 축소해 Ollama 응답 타임아웃을 줄였습니다. (`backend/app.py`)
     - AlphaIncubator 채팅 패널의 자동 스크롤을 제거해 메시지 입력 시 화면이 임의로 내려가지 않도록 조정했습니다. (`frontend/src/pages/AlphaIncubator.tsx`)
+
+[30](20251026):대시보드 종목 성과 분석 패널 및 API 확장
+    - `/api/data/ticker-performance` 엔드포인트를 추가해 다중 종목의 누적 수익률·CAGR·Sharpe·MDD 등 핵심 지표를 계산하고 누락 종목 정보를 함께 반환합니다. (`backend/app.py`)
+    - Dashboard 자산 탭을 Recharts 기반 멀티 라인 차트+지표 테이블 구조로 재작성하고, 우측 설정 패널에서 기간/종목을 선택해 분석을 실행하도록 UX를 개편했습니다. (`frontend/src/pages/Dashboard.tsx`)
+    - 프론트 타입/서비스 정의에 티커 성과 스키마를 추가하고, 문서·API 사양을 최신 상태로 동기화했습니다. (`frontend/src/types/index.ts`, `frontend/src/services/api.ts`, `Document/API.md`, `Document/Structure.md`)
+
+[31](20251026):백테스트 체결 시점 보정 및 동시성 제거
+    - `calculate_factor_performance`를 리팩터링해 시그널 계산(t) → t+1 거래일 시가 체결 → 다음 리밸런싱 시가 청산의 Open-to-Open 수익률로 일관되게 계산합니다. (`backend/app.py`)
+    - 백테스트/GA/포트폴리오 API가 가격 데이터를 불러올 때 Open 컬럼을 포함하고, 종가 기반 `NextDayReturn` 의존 로직을 제거했습니다. (`backend/app.py`)
+    - 백엔드 전역에서 결과 요약/로그는 새 체결 모델의 지표를 사용하도록 갱신했습니다. (`backend/app.py`)

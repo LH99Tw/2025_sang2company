@@ -85,11 +85,17 @@ class AlphaDataset:
         각 별칭을 판다스 시리즈로 노출시키며, `data`(전체 프레임)와
         `meta`(호출자가 제공한 추가 메타데이터)를 포함합니다.
         """
-        locals_env: Dict[str, Any] = {
-            alias: self.frame[column]
-            for alias, column in self.column_aliases.items()
-            if column in self.frame.columns
-        }
+        locals_env: Dict[str, Any] = {}
+        for alias, column in self.column_aliases.items():
+            if column not in self.frame.columns:
+                continue
+            series = self.frame[column].copy()
+            series.name = alias
+            try:
+                series.columns = pd.Index([alias])  # type: ignore[attr-defined]
+            except Exception:
+                setattr(series, 'columns', pd.Index([alias]))
+            locals_env[alias] = series
         locals_env["data"] = self.frame
         locals_env["meta"] = self.metadata
         return locals_env

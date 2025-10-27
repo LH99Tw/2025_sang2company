@@ -199,35 +199,26 @@ class TranspiledAlpha:
     version: str = TRANSPILER_VERSION
 
 
-def _coerce_to_series(result: Any, dataset: AlphaDataset) -> pd.Series:
-    """트랜스파일된 표현식 출력이 판다스 시리즈인지 확인합니다."""
-    if isinstance(result, pd.Series):
+def _normalize_output(result: Any, dataset: AlphaDataset) -> Any:
+    """표현식 출력이 시계열 또는 패널 형태로 해석 가능하도록 정규화합니다."""
+    if isinstance(result, (pd.Series, pd.DataFrame)):
         return result
 
-    if isinstance(result, pd.DataFrame):
-        if result.shape[1] == 1:
-            return result.iloc[:, 0]
-
-        # 2차원 행렬을 단일 시계열로 축소합니다.
-        try:
-            if result.shape[0] == result.shape[1] and list(result.columns) == list(result.index):
-                diagonal = result.to_numpy().diagonal()
-                return pd.Series(diagonal, index=result.index)
-        except Exception:
-            pass
-
-        reduced = result.mean(axis=1, numeric_only=True)
-        if isinstance(reduced, pd.Series) and len(reduced) == len(dataset.frame.index):
-            return reduced
-
-        raise AlphaExecutionError("Expression returned DataFrame with incompatible shape")
-
     if isinstance(result, (np.ndarray, list, tuple)):
-        if len(result) == len(dataset.frame.index):
-            return pd.Series(result, index=dataset.frame.index)
-        raise AlphaExecutionError("Expression output length does not match dataset index")
+        arr = np.asarray(result)
+        if arr.ndim == 1:
+            if arr.shape[0] != len(dataset.frame.index):
+                raise AlphaExecutionError("Expression output length does not match dataset index")
+            return pd.Series(arr, index=dataset.frame.index)
+        if arr.ndim == 2:
+            # 2D 배열은 DataFrame으로 변환; 컬럼 추론 불가 시 generic 이름 사용
+            columns = getattr(dataset.frame, "columns", None)
+            if columns is not None and len(columns) == arr.shape[1]:
+                return pd.DataFrame(arr, index=dataset.frame.index, columns=columns)
+            col_names = [f"col_{idx}" for idx in range(arr.shape[1])]
+            return pd.DataFrame(arr, index=dataset.frame.index, columns=col_names)
+        raise AlphaExecutionError("Cannot interpret ndarray with ndim > 2 as factor output")
 
-    # Broadcast scalars across the index
     if np.isscalar(result):
         return pd.Series(result, index=dataset.frame.index)
 
@@ -266,7 +257,7 @@ def compile_expression(expression: str, *, name: Optional[str] = None) -> Transp
             result = eval(code_object, ALPHA_GLOBALS, locals_env)  # noqa: S307 - controlled globals
         except Exception as exc:  # pragma: no cover - surface as runtime error
             raise AlphaExecutionError(f"Alpha evaluation failed: {exc}") from exc
-        return _coerce_to_series(result, dataset)
+        return _normalize_output(result, dataset)
 
     python_source = render_function_source(name or "alpha_formula", expression)
 

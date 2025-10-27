@@ -60,6 +60,9 @@ def delay(df, period=1):
 
 def rank(df):
     """Cross-sectional rank (per-date pct rank 기대 시, 외부에서 groupby(date) 사용)."""
+    if isinstance(df, pd.DataFrame):
+        # rank each row (date-wise) so cross-sectional percentiles per timestamp
+        return df.rank(axis=1, pct=True)
     return df.rank(pct=True)
 
 def scale(df, k=1):
@@ -91,6 +94,10 @@ def ts_argmin(df, window=10):
 def decay_linear(df, period=10):
     """Linear weighted moving average implementation (per-column)."""
     period = int(period)
+    if isinstance(df, pd.Series):
+        df = df.to_frame()
+    elif not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
     if df.isnull().values.any():
         df = df.copy()
         df.fillna(method='ffill', inplace=True)
@@ -130,13 +137,13 @@ def floor_window(x):
 
 class Alphas(object):
     def __init__(self, df_data):
-        self.open = df_data['S_DQ_OPEN']
-        self.high = df_data['S_DQ_HIGH']
-        self.low = df_data['S_DQ_LOW']
-        self.close = df_data['S_DQ_CLOSE']
-        self.volume = df_data['S_DQ_VOLUME'] * 100
-        self.returns = df_data['S_DQ_PCTCHANGE']
-        self.vwap = (df_data['S_DQ_AMOUNT'] * 1000) / (df_data['S_DQ_VOLUME'] * 100 + 1)
+        self.open = pd.DataFrame(df_data['S_DQ_OPEN'])
+        self.high = pd.DataFrame(df_data['S_DQ_HIGH'])
+        self.low = pd.DataFrame(df_data['S_DQ_LOW'])
+        self.close = pd.DataFrame(df_data['S_DQ_CLOSE'])
+        self.volume = pd.DataFrame(df_data['S_DQ_VOLUME']) * 100
+        self.returns = pd.DataFrame(df_data['S_DQ_PCTCHANGE'])
+        self.vwap = (pd.DataFrame(df_data['S_DQ_AMOUNT']) * 1000) / (pd.DataFrame(df_data['S_DQ_VOLUME']) * 100 + 1)
 
     # Alpha#1
     def alpha001(self):

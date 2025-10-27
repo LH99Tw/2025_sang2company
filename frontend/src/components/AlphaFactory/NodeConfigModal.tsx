@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import styled from 'styled-components';
-import { Modal, Select, DatePicker, InputNumber, Progress, message } from 'antd';
+import { Modal, Select, DatePicker, InputNumber, Progress, message, Switch } from 'antd';
 import { theme } from '../../styles/theme';
 import { GlassButton } from '../common/GlassButton';
 import dayjs from 'dayjs';
@@ -72,6 +72,12 @@ export const NodeConfigModal: React.FC<NodeConfigModalProps> = ({
   onClose,
 }) => {
   const [formData, setFormData] = useState(nodeData || {});
+
+  useEffect(() => {
+    if (visible) {
+      setFormData(nodeData || {});
+    }
+  }, [nodeData, visible]);
 
   const handleSave = () => {
     onSave(formData);
@@ -232,15 +238,50 @@ export const NodeConfigModal: React.FC<NodeConfigModalProps> = ({
             </FormGroup>
 
             <FormGroup>
-              <Label>최종 생존 수 (Max Depth)</Label>
-              <Description>최종적으로 선별할 알파의 개수</Description>
+              <Label>트리 최대 깊이 (Max Tree Depth)</Label>
+              <Description>수식 트리가 가질 수 있는 최대 연산 단계</Description>
               <InputNumber
-                value={formData.maxDepth || 10}
+                value={formData.maxDepth || 6}
                 onChange={(value) => setFormData({ ...formData, maxDepth: value })}
+                min={2}
+                max={50}
+                step={1}
+                style={{ width: '100%' }}
+              />
+            </FormGroup>
+
+            <FormGroup>
+              <Label>최종 생존 수 (Elite Count)</Label>
+              <Description>세대 종료 후 보존할 상위 알파 개수</Description>
+              <InputNumber
+                value={formData.maxAlphas || 10}
+                onChange={(value) => setFormData({ ...formData, maxAlphas: value })}
                 min={1}
                 max={50}
                 step={1}
                 style={{ width: '100%' }}
+              />
+            </FormGroup>
+
+            <FormGroup>
+              <Label>시드 알파 수 (Registry Seeds)</Label>
+              <Description>레지스트리에서 초기 부모로 사용할 알파 개수</Description>
+              <InputNumber
+                value={formData.registrySeedLimit ?? 16}
+                onChange={(value) => setFormData({ ...formData, registrySeedLimit: value })}
+                min={1}
+                max={200}
+                step={1}
+                style={{ width: '100%' }}
+              />
+            </FormGroup>
+
+            <FormGroup>
+              <Label>시드 셔플 여부</Label>
+              <Description>실행마다 레지스트리 시드를 무작위로 선택합니다</Description>
+              <Switch
+                checked={formData.registrySeedShuffle ?? false}
+                onChange={(checked) => setFormData({ ...formData, registrySeedShuffle: checked })}
               />
             </FormGroup>
 
@@ -250,12 +291,22 @@ export const NodeConfigModal: React.FC<NodeConfigModalProps> = ({
                 <span className="value">{(formData.populationSize || 50) * (formData.generations || 20)} 회</span>
               </SummaryItem>
               <SummaryItem>
+                <span className="label">트리 깊이:</span>
+                <span className="value">{formData.maxDepth || 6} 단계</span>
+              </SummaryItem>
+              <SummaryItem>
                 <span className="label">예상 소요 시간:</span>
                 <span className="value">약 {Math.ceil((formData.generations || 20) * 0.5)} 분</span>
               </SummaryItem>
               <SummaryItem>
                 <span className="label">최종 선별:</span>
-                <span className="value">{formData.maxDepth || 10} 개</span>
+                <span className="value">{formData.maxAlphas || 10} 개</span>
+              </SummaryItem>
+              <SummaryItem>
+                <span className="label">시드/셔플:</span>
+                <span className="value">
+                  {(formData.registrySeedLimit ?? 16)}개 / {formData.registrySeedShuffle ? '랜덤' : '고정'}
+                </span>
               </SummaryItem>
             </SummaryCard>
           </ModalContent>
@@ -398,4 +449,3 @@ export const NodeConfigModal: React.FC<NodeConfigModalProps> = ({
     </Modal>
   );
 };
-

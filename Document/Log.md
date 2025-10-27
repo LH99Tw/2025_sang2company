@@ -1145,3 +1145,29 @@ allowed_fields = ['name', 'email', 'profile_emoji']
     - `calculate_factor_performance`를 리팩터링해 시그널 계산(t) → t+1 거래일 시가 체결 → 다음 리밸런싱 시가 청산의 Open-to-Open 수익률로 일관되게 계산합니다. (`backend/app.py`)
     - 백테스트/GA/포트폴리오 API가 가격 데이터를 불러올 때 Open 컬럼을 포함하고, 종가 기반 `NextDayReturn` 의존 로직을 제거했습니다. (`backend/app.py`)
     - 백엔드 전역에서 결과 요약/로그는 새 체결 모델의 지표를 사용하도록 갱신했습니다. (`backend/app.py`)
+
+[32](20251026):GA 수식 평가 시 결측값 유지 및 오류 개체 즉시 거절
+    - GA 수식 실행 시 NaN/inf를 0으로 채우지 않고 그대로 유지해 커버리지·회전율 계산이 실제 유효 구간만 반영되도록 했습니다. (`GA_algorithm/autoalpha_ga.py`)
+    - 상관계수 연산이 입력 공백이나 수치 오류를 만나면 0행렬을 반환하던 로직을 제거하고 예외를 발생시켜 해당 개체를 즉시 탈락 처리합니다. (`GA_algorithm/autoalpha_ga.py`)
+    - GA가 새로운 알파 파일을 생성할 때도 동일한 NaN 보존·에러 전파 규칙을 직렬화해 백테스트 경로와 일관성을 확보했습니다. (`GA_algorithm/autoalpha_ga.py`)
+
+[33](20251026):GA 데이터셋을 전체 종목·기간으로 확장
+    - GA 초기화 시 최근 50일·상위 10종목으로 축소하던 로직을 제거하고, 공용/개인 알파 레지스트리가 사용하는 전체 S&P 우주를 그대로 피벗해 제공합니다. (`backend/app.py`)
+    - Date/Ticker 누락 검증과 정렬, 결측 구간 ffill/bfill을 적용해 모든 종목이 동일한 기간 축을 공유하도록 정규화했습니다. (`backend/app.py`)
+    - GA 평가 시 레지스트리 알파를 단말로 포함하고, 초기 개체군에 공유·개인 알파 기반 시드를 주입해 트리 기반 변이와 조합이 동시에 이루어지도록 했습니다. (`GA_algorithm/autoalpha_ga.py`, `backend/app.py`)
+
+[34](20251026):GA 레지스트리 시드 전면 개선 및 사용자 설정 추가
+    - 레지스트리 팩터를 전체 종목 행렬로 온디맨드 계산하고 캐싱해, 샘플 복제 없이 실거래와 동일한 단면 데이터를 기반으로 GA를 평가합니다. (`GA_algorithm/autoalpha_ga.py`)
+    - 시드 선택 개수·셔플 여부를 GA 초기화 시 주입할 수 있도록 하고, API에서 해당 파라미터를 받아 GA 인스턴스에 전달하도록 확장했습니다. (`GA_algorithm/autoalpha_ga.py`, `backend/app.py`)
+    - 프론트 GA 설정 모달에 “Registry Seeds/Shuffle” 옵션을 추가해 사용자가 시드 개수와 랜덤 여부를 직접 지정할 수 있도록 UI/타입 정의를 갱신했습니다. (`frontend/src/components/AlphaFactory/NodeConfigModal.tsx`, `frontend/src/pages/AlphaPool.tsx`, `frontend/src/types/index.ts`)
+
+[35](20251027):CSV/JSON 데이터 경로 고정
+    - `CSVManager`와 `UserDatabase` 초기화 시 프로젝트 루트 기준 절대 경로를 사용하도록 변경해, 실행 위치에 관계없이 동일한 `database/csv_data`·`database/userdata`를 참조합니다. (`backend/app.py`)
+
+[36](20251027):LangChain/MCTS 알파 생성 안정화와 GA 평가 보강
+    - LLM 응답 파서를 보강해 잘린 JSON·코드 블록에서도 expression/rationale을 최대한 복구하고, `ts_amin` 등 오타 함수는 자동으로 `ts_min` 등 정식 명칭으로 치환합니다. (`backend/app.py`)
+    - `decay_linear`와 같은 frame 전용 연산이 Series 입력을 받아도 동작하도록 GA 수식 컴파일러를 수정하고, MCTS 재시도 시에도 alias 치환이 적용되도록 했습니다. (`GA_algorithm/autoalpha_ga.py`, `backend/app.py`)
+    - GA 백테스트에서 종목별 계산 실패를 전체 오류로 덮어쓰지 않고 ticker별 상세 경고를 남기도록 개선해 디버깅 정보를 제공합니다. (`backend/app.py`)
+
+[37](20251027):백테스트 롱 전략 전용화
+    - 분위수 기반 리밸런싱에서 숏 포지션을 제거하고, 상위 종목 롱 포지션만 진입하도록 수익률 계산식을 수정했습니다. (`backend/app.py`)

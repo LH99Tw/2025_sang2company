@@ -172,6 +172,8 @@ export interface GAParams {
   generations: number;
   max_alphas: number;
   max_depth?: number;
+  registry_seed_limit?: number;
+  registry_seed_shuffle?: boolean;
   rebalancing_frequency: string;
   transaction_cost: number;
   quantile: number;

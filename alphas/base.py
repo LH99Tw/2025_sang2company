@@ -89,13 +89,13 @@ class AlphaDataset:
         for alias, column in self.column_aliases.items():
             if column not in self.frame.columns:
                 continue
-            series = self.frame[column].copy()
-            series.name = alias
-            try:
-                series.columns = pd.Index([alias])  # type: ignore[attr-defined]
-            except Exception:
-                setattr(series, 'columns', pd.Index([alias]))
-            locals_env[alias] = series
+            data = self.frame[column].copy()
+            if isinstance(data, pd.Series):
+                df = data.to_frame(name=alias)
+            else:
+                df = pd.DataFrame(data)
+                df.columns = [alias] * df.shape[1]
+            locals_env[alias] = df
         locals_env["data"] = self.frame
         locals_env["meta"] = self.metadata
         return locals_env

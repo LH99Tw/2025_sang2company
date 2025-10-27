@@ -87,6 +87,9 @@ from Alphas import (
     safe_clean, adv, floor_window
 )
 
+from alphas.base import AlphaDataset
+from alphas.registry import AlphaRegistry
+
 
 # ===============================
 # 표현: 수식 트리 (Expression Tree)
@@ -145,6 +148,7 @@ BINARY_OPS = {
 }
 
 TERMINALS = ["open", "high", "low", "close", "volume", "vwap", "returns"]
+TERMINAL_METADATA: Dict[str, Dict[str, Any]] = {}
 
 # 진화 품질 평가 시 기본 가중치 설정 (문헌 기반)
 DEFAULT_METRIC_WEIGHTS: Dict[str, Any] = {
@@ -172,6 +176,7 @@ class Node:
     right: Optional['Node'] = None
     params: Dict[str, Any] = field(default_factory=dict)
     terminal_name: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def depth(self) -> int:
         if self.op == "terminal":
@@ -186,10 +191,15 @@ class Node:
             left=self.left.copy() if self.left else None,
             right=self.right.copy() if self.right else None,
             params=dict(self.params),
-            terminal_name=self.terminal_name
+            terminal_name=self.terminal_name,
+            metadata=dict(self.metadata),
         )
 
-    def compile(self) -> Callable[[Alphas], pd.Series]:
+    def compile(
+        self,
+        registry_cache: Optional[Dict[str, pd.DataFrame]] = None,
+        registry_fetcher: Optional[Callable[[str], Optional[pd.DataFrame]]] = None,
+    ) -> Callable[[Alphas], pd.Series]:
         """
         수식 트리를 실행 가능한 함수로 컴파일합니다.
         - 반환 함수는 Alphas 컨텍스트(가격/거래량 등)를 받아 팩터 시계열(Series 또는 DataFrame)을 출력합니다.
@@ -198,6 +208,25 @@ class Node:
         def _compile(node: 'Node') -> Callable[[Alphas], pd.Series]:
             if node.op == "terminal":
                 name = node.terminal_name
+
+                if registry_cache is not None and name and name in registry_cache:
+                    factor_df = registry_cache[name]
+                    return lambda _ctx, _factor=factor_df: _factor.copy()
+
+                if registry_fetcher and name and name.startswith("registry::"):
+                    def f(_ctx: Alphas, _name=name):
+                        factor_df = None
+                        if registry_cache is not None and _name in registry_cache:
+                            factor_df = registry_cache[_name]
+                        else:
+                            factor_df = registry_fetcher(_name)
+                            if factor_df is not None and registry_cache is not None:
+                                registry_cache[_name] = factor_df
+                        if factor_df is None:
+                            raise ValueError(f"Registry factor '{_name}' could not be evaluated")
+                        return factor_df.copy()
+                    return f
+
                 def f(ctx: Alphas):
                     return getattr(ctx, name)
                 return f
@@ -208,7 +237,16 @@ class Node:
                 def f(ctx: Alphas):
                     x = child_f(ctx)
                     if fn_meta.get("frame_only"):
-                        return fn_meta["fn"](x.to_frame(), **node.params).iloc[:, 0]
+                        if isinstance(x, pd.DataFrame):
+                            frame_input = x
+                        elif isinstance(x, pd.Series):
+                            frame_input = x.to_frame()
+                        else:
+                            frame_input = pd.DataFrame(x)
+                        result = fn_meta["fn"](frame_input, **node.params)
+                        if isinstance(result, pd.DataFrame):
+                            return result.iloc[:, 0]
+                        return result
                     return fn_meta["fn"](x, **node.params)
                 return f
 
@@ -238,18 +276,17 @@ class Node:
                             pass
 
                         if hasattr(a, "empty") and a.empty:
-                            return pd.DataFrame(0, index=base_index, columns=base_columns)
+                            raise ValueError("correlation left operand is empty")
                         if hasattr(b, "empty") and b.empty:
-                            return pd.DataFrame(0, index=base_index, columns=base_columns)
+                            raise ValueError("correlation right operand is empty")
                         try:
                             result = fn_meta["fn"](a, b, w)
                             # correlation 결과 안전성 확보
                             if hasattr(result, 'replace'):
-                                result = result.replace([np.inf, -np.inf], 0).fillna(0)
+                                result = result.replace([np.inf, -np.inf], np.nan)
                             return result
-                        except:
-                            # correlation 계산 실패 시 0 행렬 반환
-                            return pd.DataFrame(0, index=base_index, columns=base_columns)
+                        except Exception as err:
+                            raise ValueError(f"correlation evaluation failed: {err}") from err
                     return f
 
                 def f(ctx: Alphas):
@@ -264,7 +301,9 @@ class Node:
         def safe(ctx: Alphas) -> pd.Series:
             out = f(ctx)
             if isinstance(out, (pd.DataFrame, pd.Series)):
-                out = out.replace([np.inf, -np.inf], 0).fillna(0)
+                out = out.replace([np.inf, -np.inf], np.nan)
+            elif isinstance(out, np.ndarray):
+                out = np.where(np.isfinite(out), out, np.nan)
             return out
         return safe
 
@@ -275,6 +314,15 @@ class Node:
         - 일부 연산자(예: decay_linear, correlation)는 프레임/윈도우 인자를 맞춰 처리합니다.
         """
         if self.op == "terminal":
+            if self.terminal_name and self.terminal_name.startswith("registry::"):
+                expr = self.metadata.get("expression")
+                if expr:
+                    return f"({expr})"
+                method = self.metadata.get("method")
+                if method:
+                    return f"self.{method}()"
+                registry_name = self.metadata.get("registry_name") or self.terminal_name.split("registry::", 1)[-1]
+                return f"self.{registry_name}()"
             return f"self.{self.terminal_name}"
 
         if self.op in UNARY_OPS:
@@ -487,7 +535,8 @@ def pca_similarity(A: pd.DataFrame, B: pd.DataFrame) -> float:
 def random_terminal(rng: random.Random) -> Node:
     """무작위 입력 단말 노드 생성(OHLCV, vwap, returns)"""
     t = rng.choice(TERMINALS)
-    return Node(op="terminal", terminal_name=t)
+    metadata = TERMINAL_METADATA.get(t, {})
+    return Node(op="terminal", terminal_name=t, metadata=dict(metadata))
 
 def random_unary(rng: random.Random, child: Node) -> Node:
     """무작위 단항 연산자 노드 생성(윈도우/기간 파라미터 포함)"""
@@ -601,7 +650,9 @@ class AutoAlphaGA:
                  random_seed:int=42,
                  metric_weights: Optional[Dict[str, Any]] = None,
                  age_layer_span:int = 6,
-                 stale_age:int = 12):
+                 stale_age:int = 12,
+                 registry: Optional[AlphaRegistry] = None,
+                 registry_seed_limit: Optional[int] = None):
         self.df_data = df_data
         self.h = int(hold_horizon)
         self.rng = random.Random(random_seed)
@@ -622,6 +673,18 @@ class AutoAlphaGA:
         self.archive: List[Individual] = []
         self.record: List[Individual] = []
         self._generation_counter = 0
+
+        self.registry: Optional[AlphaRegistry] = None
+        self.registry_seed_limit = registry_seed_limit if registry_seed_limit is not None else 16
+        self.registry_shuffle = False
+        self.registry_cache: Dict[str, pd.DataFrame] = {}
+        self.registry_metadata: Dict[str, Dict[str, Any]] = {}
+        self.registry_definitions: Dict[str, Any] = {}
+        self.registry_seed_nodes: List[Node] = []
+        self.registry_terminal_names: List[str] = []
+
+        if registry is not None:
+            self.update_registry(registry)
 
     def _prepare_metric_weights(self, metric_weights: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -720,7 +783,12 @@ class AutoAlphaGA:
             return 1.0
         return max(0.0, 1.0 - best_sim)
 
-    def _evaluate_factor_metrics(self, factor_df: pd.DataFrame, ind: Optional[Individual]) -> FitnessMetrics:
+    def _evaluate_factor_metrics(
+        self,
+        factor_df: pd.DataFrame,
+        ind: Optional[Individual],
+        raw_factor: Optional[pd.DataFrame] = None,
+    ) -> FitnessMetrics:
         """
         멀티 지표 기반 적합도 계산 (다중 기간 IC + 안정성 + 다양성).
         """
@@ -728,11 +796,13 @@ class AutoAlphaGA:
         ic_counts: Dict[int, int] = {}
         ic_series_collection: List[pd.Series] = []
 
+        base_factor = raw_factor if raw_factor is not None else factor_df
+
         for horizon, _ in self.metric_weights["horizons"].items():
             future_ret = self.future_returns_cache.get(horizon)
             if future_ret is None:
                 continue
-            ic_series = cross_sectional_ic_series(factor_df, future_ret)
+            ic_series = cross_sectional_ic_series(base_factor, future_ret)
             ic_by_horizon[horizon] = float(ic_series.mean()) if not ic_series.empty else 0.0
             ic_counts[horizon] = int(ic_series.count())
             if not ic_series.empty:
@@ -759,7 +829,9 @@ class AutoAlphaGA:
 
         turnover = compute_factor_turnover(factor_df)
         coverage = 0.0
-        if len(factor_df) > 0:
+        if raw_factor is not None and raw_factor.size > 0:
+            coverage = float(np.isfinite(raw_factor.values).sum()) / float(raw_factor.size)
+        elif len(factor_df) > 0:
             valid_points = int(combined_series.dropna().shape[0]) if not combined_series.empty else 0
             coverage = valid_points / float(len(factor_df))
 
@@ -781,6 +853,161 @@ class AutoAlphaGA:
         metrics.novelty = self.novelty_score(ind) if ind is not None else 0.0
         metrics.composite = self._compose_score(metrics)
         return metrics
+
+    def _normalize_registry_output(self, raw: Any, index: pd.Index) -> pd.Series:
+        if isinstance(raw, pd.Series):
+            return raw.reindex(index)
+        if isinstance(raw, pd.DataFrame):
+            if raw.empty:
+                return pd.Series(index=index, dtype=float)
+            series = raw.iloc[:, 0]
+            return series.reindex(index)
+        if isinstance(raw, dict):
+            if raw:
+                first = next(iter(raw.values()))
+                return self._normalize_registry_output(first, index)
+            return pd.Series(index=index, dtype=float)
+        if isinstance(raw, (list, tuple, np.ndarray)):
+            arr = np.asarray(raw, dtype=float).reshape(-1)
+            if len(arr) == len(index):
+                return pd.Series(arr, index=index)
+            return pd.Series(index=index, dtype=float)
+        if np.isscalar(raw):
+            return pd.Series(float(raw), index=index)
+        return pd.Series(index=index, dtype=float)
+
+    def _compute_registry_factor(self, definition) -> Optional[pd.DataFrame]:
+        tickers = list(self.close_df.columns)
+        if not tickers:
+            return None
+
+        index = self.close_df.index
+
+        series_list: List[pd.Series] = []
+
+        base_columns = ['S_DQ_OPEN', 'S_DQ_HIGH', 'S_DQ_LOW', 'S_DQ_CLOSE', 'S_DQ_VOLUME', 'S_DQ_AMOUNT', 'S_DQ_PCTCHANGE']
+
+        for ticker in tickers:
+            frame = pd.DataFrame(index=index)
+            for column in base_columns:
+                source = self.df_data.get(column)
+                if source is not None and ticker in source.columns:
+                    frame[column] = source[ticker]
+
+            if 'S_DQ_AMOUNT' not in frame.columns:
+                close = frame.get('S_DQ_CLOSE')
+                volume = frame.get('S_DQ_VOLUME')
+                if close is not None and volume is not None:
+                    frame['S_DQ_AMOUNT'] = close * volume
+
+            dataset = AlphaDataset(frame)
+            try:
+                raw = definition.compute(dataset)
+            except Exception:
+                return None
+
+            factor_series = self._normalize_registry_output(raw, index)
+            factor_series.name = ticker
+            series_list.append(factor_series.astype(np.float32))
+
+        if not series_list:
+            return None
+        factor_df = pd.concat(series_list, axis=1)
+        factor_df.index = index
+        factor_df = factor_df.reindex(columns=tickers)
+
+        finite_mask = np.isfinite(factor_df.values)
+        if finite_mask.sum() == 0:
+            return None
+        return factor_df
+
+    def _get_registry_factor(self, key: str) -> Optional[pd.DataFrame]:
+        if key in self.registry_cache:
+            return self.registry_cache[key]
+
+        definition = self.registry_definitions.get(key)
+        if definition is None:
+            return None
+
+        factor_df = self._compute_registry_factor(definition)
+        if factor_df is not None:
+            self.registry_cache[key] = factor_df
+        else:
+            self.registry_definitions.pop(key, None)
+        return factor_df
+
+    def update_registry(
+        self,
+        registry: Optional[AlphaRegistry],
+        *,
+        seed_limit: Optional[int] = None,
+        shuffle: Optional[bool] = None,
+    ) -> None:
+        self.registry = registry
+        if seed_limit is not None:
+            self.registry_seed_limit = seed_limit
+        if shuffle is not None:
+            self.registry_shuffle = bool(shuffle)
+
+        for name in self.registry_terminal_names:
+            TERMINAL_METADATA.pop(name, None)
+            try:
+                TERMINALS.remove(name)
+            except ValueError:
+                pass
+
+        self.registry_cache.clear()
+        self.registry_metadata.clear()
+        self.registry_seed_nodes.clear()
+        self.registry_terminal_names.clear()
+        self.registry_definitions.clear()
+
+        if registry is None:
+            return
+
+        definitions = list(registry.iter_definitions())
+        if self.registry_shuffle and len(definitions) > 1:
+            self.rng.shuffle(definitions)
+        if self.registry_seed_limit is not None and self.registry_seed_limit > 0:
+            definitions = definitions[: self.registry_seed_limit]
+
+        for definition in definitions:
+            key = f"registry::{definition.name}"
+            metadata = {
+                "registry_name": definition.name,
+                "source": definition.source,
+                "provider": definition.provider,
+            }
+            expr = definition.metadata.get("expression") if definition.metadata else None
+            if expr:
+                metadata["expression"] = expr
+            method = definition.metadata.get("method") if definition.metadata else None
+            if method:
+                metadata["method"] = method
+
+            TERMINAL_METADATA[key] = metadata
+            if key not in TERMINALS:
+                TERMINALS.append(key)
+            self.registry_metadata[key] = metadata
+            self.registry_definitions[key] = definition
+            self.registry_terminal_names.append(key)
+            self.registry_seed_nodes.append(Node(op="terminal", terminal_name=key, metadata=dict(metadata)))
+
+    def _expand_registry_seed(self, node: Node, depth: int) -> Node:
+        seed = node.copy()
+        if depth <= 1:
+            return seed
+        while seed.depth() < depth:
+            if self.rng.random() < 0.5:
+                seed = random_unary(self.rng, seed)
+            else:
+                partner_depth = max(1, depth - 1)
+                partner = random_tree(self.rng, partner_depth)
+                if self.rng.random() < 0.5:
+                    seed = random_binary(self.rng, seed, partner)
+                else:
+                    seed = random_binary(self.rng, partner, seed)
+        return seed
 
     def _update_archive(self, ind: Individual, diversity_threshold: float) -> None:
         """
@@ -860,41 +1087,38 @@ class AutoAlphaGA:
             return 0.0
             
         try:
-            f = ind.tree.compile()
+            f = ind.tree.compile(registry_cache=self.registry_cache, registry_fetcher=self._get_registry_factor)
             val = f(self.ctx)
 
             # 결과 형태 정규화
             if isinstance(val, pd.Series):
-                try:
-                    if isinstance(val.index, pd.MultiIndex):
-                        factor_df = val.unstack()
-                    else:
-                        if len(val) == len(self.close_df):
-                            factor_df = pd.DataFrame(
-                                np.tile(val.values.reshape(-1, 1), (1, self.close_df.shape[1])),
-                                index=self.close_df.index,
-                                columns=self.close_df.columns
-                            )
-                        else:
-                            factor_df = self.close_df * 0.0
-                except Exception:
-                    factor_df = self.close_df * 0.0
+                if isinstance(val.index, pd.MultiIndex):
+                    factor_df = val.unstack()
+                else:
+                    if len(val) != len(self.close_df.index):
+                        raise ValueError("Series length mismatch")
+                    arr = np.tile(val.values.reshape(-1, 1), (1, self.close_df.shape[1]))
+                    factor_df = pd.DataFrame(arr, index=self.close_df.index, columns=self.close_df.columns)
             elif isinstance(val, pd.DataFrame):
                 factor_df = val
             else:
-                factor_df = self.close_df * 0.0
+                raise ValueError("Factor expression must return Series or DataFrame")
 
-            factor_df = factor_df.replace([np.inf, -np.inf], 0).fillna(0)
+            factor_df = factor_df.reindex(index=self.close_df.index, columns=self.close_df.columns)
+            factor_df = factor_df.astype(float)
+            raw_factor = factor_df.replace([np.inf, -np.inf], np.nan)
 
-            if factor_df.shape != self.close_df.shape:
-                factor_df = factor_df.reindex(
-                    index=self.close_df.index,
-                    columns=self.close_df.columns,
-                    fill_value=0
-                )
+            finite_mask = np.isfinite(raw_factor.values)
+            if finite_mask.sum() == 0:
+                raise ValueError("Factor matrix has no finite values")
 
-            ind.factor_matrix = factor_df
-            metrics = self._evaluate_factor_metrics(factor_df, ind)
+            if np.nansum(np.abs(raw_factor.values)) == 0:
+                raise ValueError("Factor matrix is zero")
+
+            factor_df_clean = raw_factor.copy()
+
+            ind.factor_matrix = factor_df_clean
+            metrics = self._evaluate_factor_metrics(factor_df_clean, ind, raw_factor=raw_factor)
             ind.metrics = metrics
             ind.fitness = float(metrics.composite) if np.isfinite(metrics.composite) else 0.0
             return ind.fitness
@@ -902,12 +1126,10 @@ class AutoAlphaGA:
         except Exception as e:
             if self._eval_counter % 100 == 1:
                 print(f"               ⚠️ 평가 에러 (#{self._eval_counter}): {str(e)[:50]}...")
-            ind.fitness = 0.0
-            ind.factor_matrix = self.close_df * 0.0
-            ind.metrics = FitnessMetrics()
-            ind.metrics.composite = 0.0
-            ind.metrics.ic_aggregate = 0.0
-            return 0.0
+            ind.fitness = float("-inf")
+            ind.factor_matrix = None
+            ind.metrics = None
+            return ind.fitness
 
     def pca_sim_to_archive(self, ind: Individual, threshold: float = 0.9) -> float:
         """
@@ -935,8 +1157,25 @@ class AutoAlphaGA:
         초기 개체군 생성(워밍스타트): 루트 템플릿 기반 후보 K배 생성 후 상위 1/K 선택
         """
         cand: List[Individual] = []
-        roots = DefaultSearchSpace.ROOT_TEMPLATES
-        while len(cand) < size*warmstart_k:
+        roots = DefaultSearchSpace.ROOT_TEMPLATES + [seed.copy() for seed in self.registry_seed_nodes]
+
+        target_candidates = size * warmstart_k
+
+        # 우선 레지스트리 기반 시드 확장
+        if self.registry_seed_nodes:
+            for seed in self.registry_seed_nodes:
+                cand.append(Individual(tree=seed.copy()))
+                if len(cand) >= target_candidates:
+                    break
+
+            if len(cand) < target_candidates:
+                for seed in self.registry_seed_nodes:
+                    expanded = self._expand_registry_seed(seed, depth)
+                    cand.append(Individual(tree=expanded))
+                    if len(cand) >= target_candidates:
+                        break
+
+        while len(cand) < target_candidates:
             root = random.choice(roots).copy()
             while root.depth() < depth:
                 if self.rng.random() < 0.5:
@@ -945,7 +1184,7 @@ class AutoAlphaGA:
                     root = random_binary(self.rng, root, random_terminal(self.rng))
             cand.append(Individual(tree=root))
 
-        while len(cand) < size*warmstart_k:
+        while len(cand) < target_candidates:
             cand.append(Individual(tree=random_tree(self.rng, depth)))
 
         print(f"            🧮 개체 평가 중: {len(cand)}개 후보...")
@@ -958,11 +1197,11 @@ class AutoAlphaGA:
             self.evaluate(ind)
             ind.age = 0
             ind.last_improved_gen = 0
-            if ind.metrics is None:
+            if ind.metrics is None and np.isfinite(ind.fitness):
                 ind.metrics = FitnessMetrics()
                 ind.metrics.composite = ind.fitness
             novelty = ind.metrics.novelty if ind.metrics and np.isfinite(ind.metrics.novelty) else self.novelty_score(ind)
-            if ind.metrics:
+            if ind.metrics and np.isfinite(ind.fitness):
                 ind.metrics.novelty = novelty
                 ind.metrics.composite = self._compose_score(ind.metrics)
                 ind.fitness = ind.metrics.composite
@@ -973,7 +1212,11 @@ class AutoAlphaGA:
                 avg_time = elapsed / i
                 remaining = (len(cand) - i) * avg_time
                 print(f"               [{i:3d}/{len(cand)}] 평가 완료 (개체당 {ind_time:.2f}초, 예상 잔여 {remaining:.1f}초)...")
-            if novelty >= diversity_gate:
+            if (
+                np.isfinite(ind.fitness)
+                and ind.factor_matrix is not None
+                and novelty >= diversity_gate
+            ):
                 self.archive.append(ind)
                 if ind.pca_vec is None and ind.factor_matrix is not None:
                     try:
@@ -1199,7 +1442,14 @@ def write_new_alphas_file(elites: List[Individual], out_path: Optional[str] = No
     for i, ind in enumerate(elites, start=1):
         name = f"alphaGA{i:03d}"
         expr = ind.tree.to_python_expr()
-        body = f"        out = ({expr})\n        return out.replace([np.inf, -np.inf], 0).fillna(0)\n"
+        body = (
+            f"        out = ({expr})\n"
+            f"        if hasattr(out, 'replace'):\n"
+            f"            out = out.replace([np.inf, -np.inf], np.nan)\n"
+            f"        elif isinstance(out, np.ndarray):\n"
+            f"            out = np.where(np.isfinite(out), out, np.nan)\n"
+            f"        return out\n"
+        )
         func = f"    def {name}(self):\n{body}\n"
         lines.append(func)
 

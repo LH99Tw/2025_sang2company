@@ -147,61 +147,53 @@ def load_real_data_for_ga():
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'])
         
-        # 데이터 구조 확인 및 변환 (Long format -> Wide format)
-        if 'Close' in df.columns and 'Date' in df.columns and 'Ticker' in df.columns:
-            # Long format 데이터를 Wide format으로 피벗
-            pivot_data = {}
-            
-            # 최근 데이터만 사용 (메모리 절약 - 최근 50일)
-            recent_dates = df['Date'].unique()[-50:]
-            df_recent = df[df['Date'].isin(recent_dates)].copy()
-            
-            # 주요 종목만 선택 (상위 10개)
-            top_tickers = df_recent.groupby('Ticker')['Close'].count().nlargest(10).index.tolist()
-            df_filtered = df_recent[df_recent['Ticker'].isin(top_tickers)].copy()
-            
-            for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-                if col in df_filtered.columns:
-                    pivot_df = df_filtered.pivot(index='Date', columns='Ticker', values=col)
-                    pivot_df = pivot_df.ffill().bfill()
-                    
-                    if col == 'Open':
-                        pivot_data['S_DQ_OPEN'] = pivot_df
-                    elif col == 'High':
-                        pivot_data['S_DQ_HIGH'] = pivot_df
-                    elif col == 'Low':
-                        pivot_data['S_DQ_LOW'] = pivot_df
-                    elif col == 'Close':
-                        pivot_data['S_DQ_CLOSE'] = pivot_df
-                    elif col == 'Volume':
-                        pivot_data['S_DQ_VOLUME'] = pivot_df
-            
-            # 필수 데이터가 있는지 확인
-            if 'S_DQ_CLOSE' in pivot_data and not pivot_data['S_DQ_CLOSE'].empty:
-                close_df = pivot_data['S_DQ_CLOSE']
-                
-                # 없는 데이터는 Close 기반으로 생성
-                if 'S_DQ_OPEN' not in pivot_data:
-                    pivot_data['S_DQ_OPEN'] = close_df * 0.995
-                if 'S_DQ_HIGH' not in pivot_data:
-                    pivot_data['S_DQ_HIGH'] = close_df * 1.01
-                if 'S_DQ_LOW' not in pivot_data:
-                    pivot_data['S_DQ_LOW'] = close_df * 0.99
-                if 'S_DQ_VOLUME' not in pivot_data:
-                    pivot_data['S_DQ_VOLUME'] = pd.DataFrame(100000, index=close_df.index, columns=close_df.columns)
-                
-                # 추가 필드
-                pivot_data['S_DQ_PCTCHANGE'] = close_df.pct_change().fillna(0)
-                pivot_data['S_DQ_AMOUNT'] = close_df * pivot_data.get('S_DQ_VOLUME', 100000)
-                
-                logger.info(f"GA 데이터 로드 성공: {close_df.shape[0]}일, {close_df.shape[1]}종목")
-                return pivot_data
-            else:
-                logger.warning("피벗 후 Close 데이터가 비어있습니다")
-                return None
-        else:
-            logger.warning("필요한 컬럼을 찾을 수 없습니다: Date, Ticker, Close")
+        required_cols = {'Date', 'Ticker', 'Open', 'High', 'Low', 'Close', 'Volume'}
+        missing = required_cols.difference(df.columns)
+        if missing:
+            logger.warning(f"필요한 컬럼을 찾을 수 없습니다: {', '.join(sorted(missing))}")
             return None
+
+        df = df[list(required_cols)].dropna(subset=['Date', 'Ticker']).copy()
+        df['Ticker'] = df['Ticker'].astype(str)
+        df = df.sort_values(['Date', 'Ticker'])
+
+        pivot_data: Dict[str, pd.DataFrame] = {}
+        column_alias = {
+            'Open': 'S_DQ_OPEN',
+            'High': 'S_DQ_HIGH',
+            'Low': 'S_DQ_LOW',
+            'Close': 'S_DQ_CLOSE',
+            'Volume': 'S_DQ_VOLUME',
+        }
+
+        tickers = sorted(df['Ticker'].unique())
+        date_index = pd.DatetimeIndex(sorted(df['Date'].unique()))
+
+        for column, alias in column_alias.items():
+            pivot_df = (
+                df.pivot(index='Date', columns='Ticker', values=column)
+                  .reindex(index=date_index, columns=tickers)
+                  .sort_index()
+            )
+            pivot_df = pivot_df.ffill().bfill()
+            pivot_data[alias] = pivot_df
+
+        close_df = pivot_data['S_DQ_CLOSE']
+
+        if 'S_DQ_VOLUME' not in pivot_data:
+            pivot_data['S_DQ_VOLUME'] = pd.DataFrame(
+                100000, index=close_df.index, columns=close_df.columns
+            )
+
+        pivot_data['S_DQ_PCTCHANGE'] = close_df.pct_change().fillna(0)
+        pivot_data['S_DQ_AMOUNT'] = close_df * pivot_data['S_DQ_VOLUME']
+
+        logger.info(
+            "GA 데이터 로드 성공: %s일, %s종목 (공용/개인 알파 레지스트리 전체 우주)",
+            close_df.shape[0],
+            close_df.shape[1],
+        )
+        return pivot_data
             
     except Exception as e:
         logger.error(f"GA 데이터 로드 실패: {str(e)}")
@@ -361,17 +353,14 @@ def calculate_factor_performance(
 
         if top_count is not None:
             top_n = max(1, min(top_count, total_names))
-            bottom_n = max(1, min(top_count, total_names))
         else:
             top_n = max(1, int(total_names * quantile))
-            bottom_n = max(1, int(total_names * quantile))
 
         long_portfolio = period_df.head(top_n)
-        short_portfolio = period_df.tail(bottom_n)
 
         long_return = long_portfolio['HoldingReturn'].mean()
-        short_return = short_portfolio['HoldingReturn'].mean()
-        factor_return = long_return - short_return - (2 * transaction_cost)
+        # 롱 포지션만 고려하므로 숏 수익은 0으로 처리
+        factor_return = long_return - (2 * transaction_cost)
 
         holding_days = max(1, len(pd.bdate_range(entry_date, exit_entry_date)) - 1)
 
@@ -649,7 +638,12 @@ def parse_llm_alpha_payload(raw_text: str) -> Tuple[str, str]:
     LLM 응답에서 알파 수식과 설명을 추출합니다.
     JSON 형식이면 파싱하고, 아니면 간단한 규칙으로 구분합니다.
     """
-    raw_text = raw_text.strip()
+    raw_text = (raw_text or '').strip()
+    if not raw_text:
+        return '', ''
+
+    def _strip_quotes(value: str) -> str:
+        return value.strip().strip('"').strip()
 
     try:
         payload = json.loads(raw_text)
@@ -657,21 +651,58 @@ def parse_llm_alpha_payload(raw_text: str) -> Tuple[str, str]:
             expression = payload.get('expression') or payload.get('alpha') or ''
             rationale = payload.get('rationale') or payload.get('explanation') or ''
             if expression:
-                return expression.strip(), rationale.strip()
+                return expression.strip(), (rationale or '').strip()
     except json.JSONDecodeError:
-        pass
+        # JSON이 미완성인 경우 간단히 보정해 다시 시도
+        stitched = raw_text.rstrip()
+        if stitched.startswith('{') and not stitched.endswith('}'):
+            try:
+                payload = json.loads(stitched + '}')
+                if isinstance(payload, dict):
+                    expression = payload.get('expression') or payload.get('alpha') or ''
+                    rationale = payload.get('rationale') or payload.get('explanation') or ''
+                    if expression:
+                        return expression.strip(), (rationale or '').strip()
+            except Exception:
+                pass
 
-    # 코드 블록 추출
-    code_match = re.search(r"```(?:python|alpha)?\s*(.*?)```", raw_text, re.DOTALL)
-    if code_match:
-        expression_candidate = code_match.group(1).strip()
-    else:
-        # 첫 줄이 수식으로 보이면 사용
+    expression_candidate = ''
+    rationale = raw_text
+
+    json_expr_match = re.search(r'"expression"\s*:\s*"(.+?)"', raw_text, re.DOTALL)
+    if json_expr_match:
+        expression_candidate = _strip_quotes(json_expr_match.group(1))
+        rationale = raw_text.replace(json_expr_match.group(0), '').strip()
+
+    json_rat_match = re.search(r'"rationale"\s*:\s*"(.+?)"', raw_text, re.DOTALL)
+    if json_rat_match:
+        rationale = _strip_quotes(json_rat_match.group(1))
+
+    if not expression_candidate:
+        code_match = re.search(r"```(?:python|alpha)?\s*(.*?)```", raw_text, re.DOTALL)
+        if code_match:
+            expression_candidate = code_match.group(1).strip()
+            rationale = raw_text.replace(code_match.group(0), '').strip()
+
+    if not expression_candidate:
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
-        expression_candidate = lines[0] if lines else raw_text
+        if lines:
+            expression_candidate = lines[0]
+            rationale = "\n".join(lines[1:]).strip()
 
-    rationale = raw_text.replace(expression_candidate, '').strip()
-    return expression_candidate, rationale
+    expression_candidate = expression_candidate.strip()
+    expression_candidate = apply_expression_aliases(expression_candidate)
+    return expression_candidate, rationale.strip()
+
+
+def apply_expression_aliases(expression: str) -> str:
+    """LLM이 생성한 수식에서 알려진 alias/오타를 정규 함수로 치환합니다."""
+    if not expression:
+        return expression
+    normalized = expression
+    for alias, target in ALPHA_FUNCTION_ALIASES.items():
+        normalized = re.sub(rf"\b{re.escape(alias)}\b", target, normalized)
+    return normalized
 
 
 def run_mcts_search(goal: str, *, simulations: int = 6) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -693,6 +724,7 @@ def run_mcts_search(goal: str, *, simulations: int = 6) -> Tuple[List[Dict[str, 
           (필요 시 numpy는 `np`, pandas는 `pd` 네임스페이스로 접근합니다.)
         - 입력 시계열 별칭은 {supported_inputs_text} 만 사용할 수 있습니다.
         - 이외 식별자(예: volume_adj_mavg, ts_avg, ema 등)는 사용하지 않습니다.
+        - `ts_min`/`ts_max`/`ts_mean`만 사용하며 `ts_amin`, `ts_amax`, `ts_avg`와 같은 표기는 사용하지 마세요.
         응답은 JSON 형식으로 작성하세요. 예시는 다음과 같습니다.
         {{
           "name": "...",
@@ -723,6 +755,7 @@ def run_mcts_search(goal: str, *, simulations: int = 6) -> Tuple[List[Dict[str, 
         llm_output, provider = call_local_llm(llm_messages, temperature=0.3)
         last_provider = provider
         expression, rationale = parse_llm_alpha_payload(llm_output)
+        expression = apply_expression_aliases(expression)
 
         if not expression:
             if provider == 'ollama':
@@ -737,6 +770,7 @@ def run_mcts_search(goal: str, *, simulations: int = 6) -> Tuple[List[Dict[str, 
                 )
                 last_provider = provider
                 expression, rationale = parse_llm_alpha_payload(llm_output)
+                expression = apply_expression_aliases(expression)
             if not expression:
                 trace.append({
                     'iteration': iteration,
@@ -820,70 +854,120 @@ def compute_factor_series_from_registry(factor_name: str,
         raise KeyError(f"등록되지 않은 알파: {factor_name}")
 
     definition = registry.get(factor_name)
-    frames: List[pd.DataFrame] = []
 
-    def normalize_output(raw: Any, dataset: AlphaDataset) -> pd.Series:
-        """Factor 결과를 일관된 Series로 변환합니다."""
-        if isinstance(raw, pd.Series):
-            return raw.reindex(dataset.frame.index).ffill().bfill()
+    if price_data.empty:
+        raise RuntimeError("가격 데이터가 비어 있습니다")
 
-        if isinstance(raw, pd.DataFrame):
-            if raw.empty:
-                return pd.Series(index=dataset.frame.index, dtype=float)
-            target = raw.iloc[:, 0]
-            return target.reindex(dataset.frame.index).ffill().bfill()
+    working = price_data.copy()
+    working['Date'] = pd.to_datetime(working['Date'])
 
-        if isinstance(raw, dict):
-            # dictionary 형식이면 팩터 이름과 일치하는 키를 우선 사용
-            if factor_name in raw:
-                return normalize_output(raw[factor_name], dataset)
-            # 첫 번째 값 사용 (일반적으로 단일 시리즈만 포함)
-            try:
-                first_value = next(iter(raw.values()))
-            except StopIteration:
-                return pd.Series(index=dataset.frame.index, dtype=float)
-            return normalize_output(first_value, dataset)
+    tickers = sorted(working['Ticker'].unique())
+    if not tickers:
+        raise RuntimeError("가격 데이터에 티커가 없습니다")
 
-        if isinstance(raw, (np.ndarray, list, tuple)):
-            arr = np.asarray(raw, dtype=float)
-            if arr.ndim == 1:
-                if len(arr) == len(dataset.frame.index):
-                    return pd.Series(arr, index=dataset.frame.index)
-                return pd.Series(index=dataset.frame.index, dtype=float)
-            if arr.ndim == 2 and arr.shape[1] >= 1:
-                column = arr[:, 0]
-                if len(column) == len(dataset.frame.index):
-                    return pd.Series(column, index=dataset.frame.index)
-            return pd.Series(index=dataset.frame.index, dtype=float)
+    pivot_map: Dict[str, pd.DataFrame] = {}
 
-        if np.isscalar(raw):
-            return pd.Series(raw, index=dataset.frame.index, dtype=float)
+    def make_pivot(column: str, alias: str) -> None:
+        pivot = working.pivot_table(index='Date', columns='Ticker', values=column)
+        pivot = pivot.reindex(columns=tickers).sort_index()
+        # ensure stacked outputs expose 'Ticker' as the column level name
+        pivot.columns.name = 'Ticker'
+        pivot_map[alias] = pivot
 
-        # 그 밖의 타입은 문자열 표현을 로깅하고 NaN 시리즈 반환
-        logger.warning("팩터 %s 결과 타입 %s을(를) Series로 변환할 수 없어 NaN으로 채웁니다.",
-                       factor_name, type(raw).__name__)
-        return pd.Series(index=dataset.frame.index, dtype=float)
+    column_map = {
+        'Open': 'open',
+        'High': 'high',
+        'Low': 'low',
+        'Close': 'close',
+        'Volume': 'volume',
+    }
 
-    for ticker, ticker_df in price_data.groupby('Ticker'):
-        dataset = prepare_alpha_dataset_from_price(ticker_df)
-        try:
-            factor_values = definition.compute(dataset)
-        except Exception as exc:
-            raise RuntimeError(f"{factor_name} 계산 실패 ({ticker}): {exc}") from exc
+    for source, alias in column_map.items():
+        if source not in working.columns:
+            raise RuntimeError(f"가격 데이터에 {source} 컬럼이 없습니다")
+        make_pivot(source, alias)
 
-        factor_series = normalize_output(factor_values, dataset)
+    pivot_map['amount'] = (pivot_map['close'] * pivot_map['volume']).fillna(0)
+    returns = pivot_map['close'].pct_change().fillna(0)
+    pivot_map['returns'] = returns
 
-        frames.append(pd.DataFrame({
-            'Date': dataset.frame.index,
-            'Ticker': ticker,
-            factor_name: factor_series.values
-        }))
+    vwap = pivot_map['amount'] / pivot_map['volume'].replace(0, np.nan)
+    pivot_map['vwap'] = vwap.fillna(method='ffill').fillna(method='bfill').fillna(0)
 
-    if not frames:
+    class MultiAssetDataset:
+        def __init__(self, data_map: Dict[str, pd.DataFrame], metadata: Optional[Dict[str, Any]] = None):
+            self.data_map = data_map
+            self.metadata = metadata or {}
+            self.frame = data_map.get('close')
+            self.column_aliases = {
+                'open': 'open',
+                'high': 'high',
+                'low': 'low',
+                'close': 'close',
+                'volume': 'volume',
+                'amount': 'amount',
+                'returns': 'returns',
+                'vwap': 'vwap',
+            }
+
+        def build_eval_locals(self) -> Dict[str, Any]:
+            env: Dict[str, Any] = {alias: df for alias, df in self.data_map.items()}
+            env['data'] = self.data_map
+            env['meta'] = self.metadata
+            return env
+
+        def get_series(self, alias: str) -> pd.DataFrame:
+            key = self.column_aliases.get(alias, alias)
+            if key not in self.data_map:
+                raise KeyError(f"Unknown alias: {alias}")
+            return self.data_map[key]
+
+        def ensure_columns(self, required: Optional[List[str]] = None):
+            required = required or list(self.column_aliases.keys())
+            missing = [alias for alias in required if alias not in self.data_map]
+            if missing:
+                raise ValueError(f"MultiAssetDataset missing aliases: {missing}")
+
+    dataset = MultiAssetDataset(pivot_map, metadata={'tickers': tickers})
+
+    try:
+        factor_values = definition.compute(dataset)
+    except Exception as exc:
+        raise RuntimeError(f"{factor_name} 계산 실패: {exc}") from exc
+
+    dates_index = pivot_map['close'].index
+
+    if isinstance(factor_values, pd.DataFrame):
+        factor_df = factor_values.reindex(index=dates_index, columns=tickers)
+    elif isinstance(factor_values, pd.Series):
+        if isinstance(factor_values.index, pd.MultiIndex) and factor_values.index.nlevels >= 2:
+            factor_df = factor_values.unstack().reindex(columns=tickers).reindex(index=dates_index)
+        elif len(factor_values) == len(dates_index):
+            arr = np.tile(factor_values.values.reshape(-1, 1), (1, len(tickers)))
+            factor_df = pd.DataFrame(arr, index=dates_index, columns=tickers)
+        else:
+            raise RuntimeError(f"{factor_name} 결과 길이가 가격 데이터와 맞지 않습니다")
+    else:
+        raise RuntimeError(f"{factor_name} 결과 타입을 처리할 수 없습니다: {type(factor_values).__name__}")
+
+    factor_df = factor_df.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    factor_long = (
+        factor_df.stack(dropna=False)
+        .rename(factor_name)
+        .reset_index()
+    )
+    if 'Ticker' not in factor_long.columns:
+        for candidate in ('level_1', 'ticker', 'column'):
+            if candidate in factor_long.columns:
+                factor_long = factor_long.rename(columns={candidate: 'Ticker'})
+                break
+    factor_long = factor_long.dropna(subset=[factor_name])
+
+    if factor_long.empty:
         raise RuntimeError(f"{factor_name} 팩터 계산 결과가 없습니다.")
 
-    result = pd.concat(frames, ignore_index=True)
-    return result
+    return factor_long
 
 def run_ga_alternative(df_data, max_depth, population_size, generations):
     """run_ga.py 방식의 대안 GA 실행"""
@@ -1167,13 +1251,15 @@ def initialize_systems():
             # 실제 데이터 로드 시도
             df_data = load_real_data_for_ga()
             if df_data and any(not df.empty for df in df_data.values()):
-                ga_system = AutoAlphaGA(df_data, hold_horizon=1, random_seed=42)
+                shared_registry = get_alpha_registry()
+                ga_system = AutoAlphaGA(df_data, hold_horizon=1, random_seed=42, registry=shared_registry)
                 logger.info("✅ GA 시스템 (실제 데이터) 초기화 완료")
             else:
                 # 실제 데이터 로드 실패 시 최소한의 더미 데이터
                 logger.warning("⚠️ 실제 데이터 로드 실패, 더미 데이터 사용")
                 dummy_data = create_minimal_dummy_data()
-                ga_system = AutoAlphaGA(dummy_data, hold_horizon=1, random_seed=42)
+                shared_registry = get_alpha_registry()
+                ga_system = AutoAlphaGA(dummy_data, hold_horizon=1, random_seed=42, registry=shared_registry)
                 logger.info("✅ GA 시스템 (더미 데이터) 초기화 완료")
         except ImportError:
             # GA 시스템을 간단한 더미로 대체
@@ -1227,7 +1313,7 @@ def initialize_systems():
         
         # 사용자 데이터베이스 초기화
         try:
-            user_database = UserDatabase()
+            user_database = UserDatabase(os.path.join(PROJECT_ROOT, 'database', 'userdata'))
             logger.info("✅ 사용자 데이터베이스 초기화 완료")
         except Exception as e:
             logger.warning(f"⚠️ 사용자 데이터베이스 초기화 실패: {e}")
@@ -1235,7 +1321,7 @@ def initialize_systems():
         
         # CSV 매니저 초기화
         try:
-            csv_manager = CSVManager()
+            csv_manager = CSVManager(os.path.join(PROJECT_ROOT, 'database', 'csv_data'))
             logger.info("✅ CSV 매니저 초기화 완료")
         except Exception as e:
             logger.warning(f"⚠️ CSV 매니저 초기화 실패: {e}")
@@ -1602,12 +1688,20 @@ def run_ga():
     """유전 알고리즘 실행"""
     try:
         data = request.get_json()
+        username = session.get('username')
         
         # GA 파라미터 설정
         population_size = data.get('population_size', 50)
         generations = data.get('generations', 20)
         max_depth = data.get('max_depth', 3)
         max_survivors = max(1, int(data.get('max_alphas', 10)))
+        registry_seed_limit = data.get('registry_seed_limit')
+        registry_seed_shuffle = bool(data.get('registry_seed_shuffle', False))
+        if registry_seed_limit is not None:
+            try:
+                registry_seed_limit = int(registry_seed_limit)
+            except (TypeError, ValueError):
+                registry_seed_limit = None
         
         if not ga_system:
             return jsonify({'error': 'GA 시스템이 초기화되지 않았습니다'}), 500
@@ -1623,6 +1717,8 @@ def run_ga():
                 'generations': generations,
                 'max_depth': max_depth,
                 'max_alphas': max_survivors,
+                'registry_seed_limit': registry_seed_limit,
+                'registry_seed_shuffle': registry_seed_shuffle,
             }
         }
         
@@ -1635,11 +1731,26 @@ def run_ga():
                     # 최근 50개 로그만 유지
                     if len(log_stream) > 50:
                         log_stream.pop(0)
-                    ga_status[task_id]['logs'] = log_stream.copy()
+                ga_status[task_id]['logs'] = log_stream.copy()
 
                 logger.info(f"GA 시작: {task_id}")
                 log_to_status(f"GA 실행 시작: {task_id}")
                 ga_status[task_id]['progress'] = 10
+
+                if hasattr(ga_system, 'update_registry'):
+                    try:
+                        effective_registry = get_alpha_registry(username)
+                        ga_system.update_registry(
+                            effective_registry,
+                            seed_limit=registry_seed_limit,
+                            shuffle=registry_seed_shuffle,
+                        )
+                        log_to_status(
+                            f"레지스트리 동기화 완료: {len(effective_registry)}개 알파 사용, "
+                            f"시드 제한={registry_seed_limit or '기본'}, 셔플={'ON' if registry_seed_shuffle else 'OFF'}"
+                        )
+                    except Exception as sync_error:
+                        log_to_status(f"레지스트리 동기화 실패: {sync_error}")
 
                 logger.info(f"GA 설정: 세대 {generations}, 개체수 {population_size}, 최대 깊이 {max_depth}")
                 log_to_status(f"GA 설정: 세대 {generations}, 개체수 {population_size}, 최대 깊이 {max_depth}")
@@ -1923,12 +2034,26 @@ def backtest_ga_results(task_id):
                         continue
 
                     factor_frames: List[pd.DataFrame] = []
+                    ticker_errors: List[str] = []
                     for ticker, ticker_df in grouped_price.items():
                         dataset = prepare_alpha_dataset_from_price(ticker_df)
                         try:
                             factor_series = transpiled.callable(dataset)
                         except Exception as exc:
-                            raise RuntimeError(f"{factor_name} ({ticker}) 계산 실패: {exc}") from exc
+                            ticker_errors.append(f"{ticker}: {exc}")
+                            continue
+
+                        if isinstance(factor_series, pd.DataFrame):
+                            if factor_series.shape[1] >= 1:
+                                factor_series = factor_series.iloc[:, 0]
+                            else:
+                                factor_series = pd.Series([], index=dataset.frame.index)
+                        elif not isinstance(factor_series, pd.Series):
+                            try:
+                                factor_series = pd.Series(factor_series, index=dataset.frame.index)
+                            except Exception as exc:
+                                ticker_errors.append(f"{ticker}: factor output shape mismatch ({exc})")
+                                continue
 
                         factor_frames.append(
                             pd.DataFrame({
@@ -1939,11 +2064,14 @@ def backtest_ga_results(task_id):
                         )
 
                     if not factor_frames:
-                        results[factor_name] = {
+                        payload = {
                             'expression': expression,
                             'ga_fitness': fitness_value,
-                            'error': '팩터 값을 계산할 수 없습니다'
+                            'error': '팩터 값을 계산할 수 없습니다',
                         }
+                        if ticker_errors:
+                            payload['details'] = ticker_errors
+                        results[factor_name] = payload
                         continue
 
                     factor_df = pd.concat(factor_frames, ignore_index=True)
@@ -1952,23 +2080,51 @@ def backtest_ga_results(task_id):
                         factor_df,
                         on=['Date', 'Ticker'],
                         how='inner'
-                    ).dropna(subset=['factor_value'])
+                    )
 
-                    if merged.empty:
-                        results[factor_name] = {
+                    if 'factor_value' not in merged.columns or 'Ticker' not in merged.columns:
+                        payload = {
                             'expression': expression,
                             'ga_fitness': fitness_value,
-                            'error': '병합된 데이터가 비어 있습니다'
+                            'error': '병합 결과에 필수 컬럼이 없습니다',
+                            'columns': list(merged.columns),
                         }
+                        if ticker_errors:
+                            payload['details'] = ticker_errors
+                        results[factor_name] = payload
                         continue
 
-                    metrics = calculate_factor_performance(
-                        merged,
-                        factor_col='factor_value',
-                        quantile=quantile,
-                        transaction_cost=transaction_cost,
-                        rebalancing_frequency=rebalancing_frequency
-                    )
+                    merged = merged.dropna(subset=['factor_value', 'Ticker'])
+
+                    if merged.empty:
+                        payload = {
+                            'expression': expression,
+                            'ga_fitness': fitness_value,
+                            'error': '병합된 데이터가 비어 있습니다',
+                        }
+                        if ticker_errors:
+                            payload['details'] = ticker_errors
+                        results[factor_name] = payload
+                        continue
+
+                    try:
+                        metrics = calculate_factor_performance(
+                            merged,
+                            factor_col='factor_value',
+                            quantile=quantile,
+                            transaction_cost=transaction_cost,
+                            rebalancing_frequency=rebalancing_frequency
+                        )
+                    except Exception as exc:
+                        payload = {
+                            'expression': expression,
+                            'ga_fitness': fitness_value,
+                            'error': str(exc),
+                        }
+                        if ticker_errors:
+                            payload['details'] = ticker_errors
+                        results[factor_name] = payload
+                        continue
 
                     metrics.update({
                         'expression': expression,
@@ -1977,6 +2133,8 @@ def backtest_ga_results(task_id):
 
                     results[factor_name] = {k: (float(v) if isinstance(v, (np.floating, np.integer)) else v)
                                              for k, v in metrics.items()}
+                    if ticker_errors:
+                        results[factor_name]['warnings'] = ticker_errors
 
                     progress_step = 10 + int(70 * index / max(1, len(top_expressions)))
                     backtest_status[backtest_task_id]['progress'] = progress_step
@@ -3664,7 +3822,7 @@ if __name__ == '__main__':
     # 서버 실행
     app.run(
         host='0.0.0.0',
-        port=5001,  # macOS AirPlay Receiver 충돌 방지
+        port=5002,  # 다른 포트 사용
         debug=True,
         threaded=True
     )

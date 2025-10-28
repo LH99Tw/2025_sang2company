@@ -621,12 +621,10 @@ const HeatmapNode: React.FC<any> = (props) => {
 
   const fill = fillColor;
   const ticker = displayLabel;
-  const percentLabel = displayChange;
   const textColor = '#F9FAFB';
   const centerX = x + width / 2;
   const centerY = y + height / 2;
   const tickerFont = Math.max(10, Math.min( Math.floor(width / 4.5), Math.floor(height / 2.8), 22));
-  const pctFont = Math.max(9, Math.min( Math.floor(width / 6), Math.floor(height / 3.2), 16));
 
   return (
     <g>
@@ -656,22 +654,6 @@ const HeatmapNode: React.FC<any> = (props) => {
           pointerEvents="none"
         >
           {ticker}
-        </text>
-      )}
-      {width > 28 && height > 28 && (
-        <text
-          x={centerX}
-          y={centerY + tickerFont * 0.6}
-          fill={textColor}
-          fontSize={pctFont}
-          textAnchor="middle"
-          dominantBaseline="hanging"
-          style={{ paintOrder: 'stroke' }}
-          stroke='rgba(0,0,0,0.45)'
-          strokeWidth={1.5}
-          pointerEvents='none'
-        >
-          {percentLabel}
         </text>
       )}
     </g>

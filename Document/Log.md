@@ -1171,3 +1171,11 @@ allowed_fields = ['name', 'email', 'profile_emoji']
 
 [37](20251027):백테스트 롱 전략 전용화
     - 분위수 기반 리밸런싱에서 숏 포지션을 제거하고, 상위 종목 롱 포지션만 진입하도록 수익률 계산식을 수정했습니다. (`backend/app.py`)
+
+[38](20251027):대시보드 히트맵 헤더 마스킹 적용
+    - Dashboard 트리맵 노드 렌더러를 교체해 섹터/산업 상단에 불투명 헤더 바를 먼저 그리고 그 아래 종목 레이블이 겹치지 않도록 처리했습니다. (`frontend/src/pages/Dashboard.tsx`)
+    - 히트맵 툴팁에서 변경률 텍스트를 서버가 내려준 `display_change` 문자열 그대로 노출해 포맷을 유지합니다. (`frontend/src/pages/Dashboard.tsx`)
+    - 다음은 [38](20251027) 이후의 수정사항입니다.
+        - 헤더 높이를 타일 크기에 맞춰 보정하고 표시 조건을 조정해 작은 섹터·산업 타일에서도 라벨이 자연스럽게 노출됩니다. (`frontend/src/pages/Dashboard.tsx`)
+        - 종목/섹터 라벨과 수익률 텍스트가 기본 렌더 경로에서 바로 그려지도록 복원해 Treemap 레이어 위에 정확히 표시됩니다. (`frontend/src/pages/Dashboard.tsx`)
+        - 종목 타일에서는 티커만 남기고 수익률 텍스트는 제거해 시각적 대비를 간소화했습니다. (`frontend/src/pages/Dashboard.tsx`)

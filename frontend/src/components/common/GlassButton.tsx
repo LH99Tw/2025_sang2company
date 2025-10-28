@@ -9,6 +9,7 @@ interface GlassButtonProps {
   disabled?: boolean;
   loading?: boolean;
   icon?: ReactNode;
+  loadingIcon?: ReactNode;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -99,6 +100,7 @@ export const GlassButton: React.FC<GlassButtonProps> = ({
   disabled = false,
   loading = false,
   icon,
+  loadingIcon,
   className,
   style,
 }) => {
@@ -111,8 +113,12 @@ export const GlassButton: React.FC<GlassButtonProps> = ({
       className={className}
       style={style}
     >
-      {icon && <span>{icon}</span>}
-      {loading ? '로딩 중...' : children}
+      {(loading ? (loadingIcon || icon) : icon) && (
+        <span>
+          {loading ? (loadingIcon || icon) : icon}
+        </span>
+      )}
+      {children}
     </ButtonComponent>
   );
 };

@@ -161,6 +161,7 @@ def map_ticker_to_yahoo(ticker):
         'BRK.A': 'BRK-A',  # Berkshire Hathaway Class A
         'BF.A': 'BF-A',    # Brown-Forman Class A
         'PSKY': 'PSNY',    # Polestar Automotive (Yahoo: PSNY)
+        'META': 'FB',      # Meta Platforms (pre-2022 symbol on Yahoo history)
     }
     
     # First check known mappings
@@ -422,25 +423,33 @@ def process_ticker_data(ticker, start_date):
         # Map ticker to correct Yahoo Finance symbol
         yahoo_ticker = map_ticker_to_yahoo(ticker)
         
-        # Download price data with fallback
-        ticker_data = yf.download(yahoo_ticker, start=start_date, progress=False, auto_adjust=True)
+        # Always download from the earliest available date to avoid pre-IPO artifacts
+        ticker_data = yf.download(yahoo_ticker, period="max", progress=False, auto_adjust=True)
         
-        # If mapped ticker fails, try original ticker
+        # If mapped ticker fails, try original ticker symbol
         if ticker_data.empty and yahoo_ticker != ticker:
-            print(f"Retrying with original ticker {ticker}...")
-            ticker_data = yf.download(ticker, start=start_date, progress=False, auto_adjust=True)
+            print(f"Retrying with original ticker {ticker} (period=max)...")
+            ticker_data = yf.download(ticker, period="max", progress=False, auto_adjust=True)
         
         if ticker_data.empty:
             print(f"No data available for {ticker}")
             return None
         
-        # Get dividends and splits
-        ticker_obj = yf.Ticker(ticker)
+        # Clip to start_date if provided (keeps only earliest available rows)
+        if start_date:
+            try:
+                start_dt = pd.to_datetime(start_date)
+                ticker_data = ticker_data[ticker_data.index >= start_dt]
+            except Exception:
+                pass
+
+        # Get dividends and splits using the mapped yahoo symbol
+        ticker_obj = yf.Ticker(yahoo_ticker)
         dividends = ticker_obj.dividends
         splits = ticker_obj.splits
         
         # Get stock info
-        info = ticker_obj.info
+        info = ticker_obj.info or {}
         market_cap = info.get('marketCap', 0)
         shares_outstanding = info.get('sharesOutstanding', 0)
         

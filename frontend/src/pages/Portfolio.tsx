@@ -111,19 +111,23 @@ const ControlPanel = styled(GlassCard)`
 `;
 
 const ControlBar = styled.div`
-  display: flex;
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns:
+    minmax(160px, 2.2fr)
+    minmax(150px, 1.4fr)
+    minmax(170px, 1.6fr)
+    minmax(120px, 1.2fr)
+    minmax(160px, 1.4fr)
+    auto;
+  align-items: center;
   gap: ${theme.spacing.sm};
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  padding-bottom: ${theme.spacing.xs};
 `;
 
 const ControlField = styled.div`
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 140px;
+  width: 100%;
 `;
 
 const ControlLabel = styled.span`
@@ -149,9 +153,9 @@ const SrOnly = styled.span`
 
 const ControlActionField = styled.div`
   display: flex;
-  align-items: flex-end;
   justify-content: flex-end;
-  flex-shrink: 0;
+  align-items: flex-end;
+  padding-top: 16px;
 `;
 
 const CompactSelect = styled(Select)`
@@ -239,6 +243,7 @@ const CompactRadioGroup = styled(Radio.Group)`
     border: 1px solid ${theme.colors.liquidGlassBorder};
     background: ${theme.colors.liquidGlass};
     color: ${theme.colors.textSecondary};
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
   }
 
   .ant-radio-button-wrapper:not(:first-child)::before {
@@ -247,7 +252,24 @@ const CompactRadioGroup = styled(Radio.Group)`
 
   .ant-radio-button-wrapper-checked,
   .ant-radio-button-wrapper-checked:hover {
-    background: ${theme.colors.accentGold};
+    background: ${theme.colors.accentGold} !important;
+    border-color: ${theme.colors.accentGold} !important;
+    color: ${theme.colors.textPrimary} !important;
+    box-shadow: 0 0 8px rgba(212, 175, 55, 0.35);
+  }
+
+  .ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled)::before,
+  .ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled):hover::before {
+    background: ${theme.colors.accentGold} !important;
+  }
+
+  .ant-radio-button-wrapper-checked .ant-radio-button-inner,
+  .ant-radio-button-wrapper-checked:hover .ant-radio-button-inner {
+    background: ${theme.colors.accentGold} !important;
+    border-color: ${theme.colors.accentGold} !important;
+  }
+
+  .ant-radio-button-wrapper:not(.ant-radio-button-wrapper-checked):hover {
     border-color: ${theme.colors.accentGold};
     color: ${theme.colors.textPrimary};
   }
@@ -262,6 +284,11 @@ const SwitchRow = styled.div`
   border-radius: 10px;
   background: ${theme.colors.liquidGlass};
   min-height: 38px;
+
+  &:hover {
+    border-color: ${theme.colors.accentGold};
+    box-shadow: 0 0 8px rgba(212, 175, 55, 0.25);
+  }
 `;
 
 const CompactSwitch = styled(Switch)`

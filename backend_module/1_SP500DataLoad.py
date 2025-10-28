@@ -13,11 +13,39 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Function to get the current list of S&P 500 components
 def get_sp500_tickers():
-    sp500_url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-    table = pd.read_html(sp500_url, header=0)
-    df = table[0]
-    gc.collect()
-    return df['Symbol'].tolist()
+    """Get S&P 500 tickers with fallback methods"""
+    try:
+        # Try Wikipedia first
+        sp500_url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        table = pd.read_html(sp500_url, header=0)
+        df = table[0]
+        gc.collect()
+        return df['Symbol'].tolist()
+    except Exception as e:
+        print(f"Wikipedia 접근 실패: {e}")
+        print("대체 방법으로 S&P 500 티커 목록을 생성합니다...")
+        
+        # Fallback: Use a predefined list of major S&P 500 tickers
+        fallback_tickers = [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B', 'UNH', 'JNJ',
+            'V', 'PG', 'JPM', 'XOM', 'HD', 'CVX', 'MA', 'PFE', 'ABBV', 'BAC', 'KO', 'AVGO',
+            'PEP', 'TMO', 'COST', 'WMT', 'DHR', 'VZ', 'ADBE', 'ABT', 'NFLX', 'CRM', 'ACN',
+            'TXN', 'NKE', 'QCOM', 'LIN', 'PM', 'NEE', 'RTX', 'T', 'HON', 'UNP', 'LOW',
+            'SPGI', 'INTU', 'IBM', 'AMGN', 'CAT', 'GE', 'BKNG', 'GS', 'AXP', 'SYK',
+            'BLK', 'DE', 'ISRG', 'TJX', 'GILD', 'MDT', 'CVS', 'CI', 'ANTM', 'CMCSA',
+            'PYPL', 'ADP', 'TGT', 'USB', 'MMM', 'ZTS', 'SO', 'DUK', 'EOG', 'CL', 'MO',
+            'APD', 'SHW', 'ITW', 'BDX', 'PNC', 'BSX', 'ICE', 'AON', 'SPG', 'EW', 'AEP',
+            'NSC', 'ECL', 'EMR', 'EXC', 'PSA', 'A', 'ETN', 'FDX', 'PGR', 'ALL', 'ROST',
+            'NOC', 'CTAS', 'PAYX', 'YUM', 'CHTR', 'EA', 'MCO', 'WM', 'TEL', 'AFL',
+            'STZ', 'COO', 'CME', 'ETR', 'ES', 'EXR', 'VRSK', 'WEC', 'AWK', 'DTE',
+            'FIS', 'FTV', 'GLW', 'HSY', 'IEX', 'IP', 'IRM', 'JKHY', 'K', 'LHX',
+            'LNT', 'LUV', 'MAS', 'MKC', 'NDAQ', 'NTRS', 'O', 'PKI', 'PPG', 'PRU',
+            'RMD', 'ROP', 'SBAC', 'SRE', 'SWK', 'SYY', 'TROW', 'TRV', 'TSN', 'UAL',
+            'VMC', 'WBA', 'WY', 'XEL', 'ZBH', 'ZBRA', 'ZION'
+        ]
+        
+        print(f"대체 목록 사용: {len(fallback_tickers)}개 티커")
+        return fallback_tickers
 
 # Function to map problematic tickers to their correct Yahoo Finance symbols
 def map_ticker_to_yahoo(ticker):
@@ -119,8 +147,8 @@ def download_stock_info():
         stock_info = process_stock_info(ticker)
         stock_info_list.append(stock_info)
         
-        # Add small delay to avoid rate limiting
-        time.sleep(0.1)
+        # Add longer delay to avoid rate limiting
+        time.sleep(2.0)
     
     # Save stock info
     stock_info_df = pd.DataFrame(stock_info_list)
@@ -350,7 +378,7 @@ def download_data(start_date="2000-01-01"):
     failed_downloads = 0
     
     # Use ThreadPoolExecutor with limited workers to avoid API rate limiting
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         futures = {executor.submit(process_ticker_data, ticker, start_date): ticker for ticker in sp500_tickers}
         
         for future in as_completed(futures):
@@ -407,7 +435,7 @@ def update_data():
     failed_updates = 0
     
     # Use ThreadPoolExecutor with limited workers to avoid API rate limiting
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         futures = {executor.submit(process_ticker_data, ticker, start_date): ticker for ticker in sp500_tickers}
         
         for future in as_completed(futures):

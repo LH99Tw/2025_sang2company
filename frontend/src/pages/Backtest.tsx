@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { GlassCard } from '../components/common/GlassCard';
 import { GlassButton } from '../components/common/GlassButton';
 import { GlassInput } from '../components/common/GlassInput';
 import { Select, DatePicker, message, Progress, Tag } from 'antd';
-import { PlayCircleOutlined } from '@ant-design/icons';
+import { PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { theme } from '../styles/theme';
 import { runBacktest, getBacktestStatus, fetchUserAlphas } from '../services/api';
 import type { BacktestParams, BacktestStatus, BacktestResult } from '../types';
@@ -33,47 +33,44 @@ const PageWrapper = styled.div`
   padding-bottom: ${theme.spacing.xl};
 `;
 
-const TitleRow = styled.div`
-  margin-bottom: ${theme.spacing.lg};
-`;
-
-const Title = styled.h1`
-  font-size: ${theme.typography.fontSize.h1};
-  color: ${theme.colors.textPrimary};
-  margin: 0;
-  font-weight: 700;
-`;
-
 const BacktestContainer = styled.div`
   display: flex;
+  flex-direction: column;
   gap: ${theme.spacing.xl};
   flex: 1;
 `;
 
-const LeftPanel = styled.div`
-  width: 420px;
-  display: flex;
-  flex-direction: column;
-  gap: ${theme.spacing.lg};
+const FormGrid = styled.div`
+  display: grid;
+  grid-template-columns:
+    minmax(220px, 3.5fr)
+    minmax(200px, 3fr)
+    minmax(170px, 1.7fr)
+    minmax(120px, 1.2fr)
+    minmax(120px, 1.2fr)
+    minmax(120px, 1.4fr);
+  column-gap: ${theme.spacing.sm};
+  row-gap: ${theme.spacing.sm};
+  align-items: end;
 `;
 
-const RightPanel = styled.div`
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: ${theme.spacing.lg};
-`;
-
-const FormGroup = styled.div`
+const ControlCard = styled(GlassCard)`
   display: flex;
   flex-direction: column;
   gap: ${theme.spacing.sm};
+  padding: ${theme.spacing.sm} ${theme.spacing.md};
 `;
 
 const Label = styled.label`
+  display: flex;
+  align-items: flex-end;
   color: ${theme.colors.textSecondary};
   font-size: ${theme.typography.fontSize.caption};
   font-weight: 600;
+  line-height: 1;
+  margin-bottom: 2px;
+  min-height: 18px;
+  white-space: nowrap;
 `;
 
 const StyledSelect = styled(Select)`
@@ -81,10 +78,26 @@ const StyledSelect = styled(Select)`
     background: ${theme.colors.liquidGlass} !important;
     border: 1px solid ${theme.colors.liquidGlassBorder} !important;
     color: ${theme.colors.textPrimary} !important;
+    height: 38px !important;
+    border-radius: 8px !important;
+    padding: 0 ${theme.spacing.sm} !important;
+    display: flex !important;
+    align-items: center !important;
   }
 
   .ant-select-selection-item {
     color: ${theme.colors.textPrimary} !important;
+    font-size: 13px;
+    line-height: 18px !important;
+  }
+
+  .ant-select-selection-placeholder {
+    color: ${theme.colors.textSecondary} !important;
+    font-size: 13px;
+  }
+
+  .ant-select-selection-overflow {
+    align-items: center;
   }
 `;
 
@@ -92,9 +105,22 @@ const StyledRangePicker = styled(RangePicker)`
   background: ${theme.colors.liquidGlass} !important;
   border: 1px solid ${theme.colors.liquidGlassBorder} !important;
   width: 100%;
+  height: 38px;
+  border-radius: 8px;
+  padding: 6px ${theme.spacing.sm};
   
   input {
     color: ${theme.colors.textPrimary} !important;
+    font-size: 13px;
+  }
+
+  .ant-picker-input {
+    display: flex;
+    align-items: center;
+  }
+
+  .ant-picker-suffix {
+    color: ${theme.colors.textSecondary};
   }
 `;
 
@@ -136,7 +162,7 @@ const MetricValue = styled.span<{ $positive?: boolean }>`
 const StatusCard = styled(GlassCard)`
   display: flex;
   flex-direction: column;
-  gap: ${theme.spacing.md};
+  gap: ${theme.spacing.sm};
 `;
 
 const StatusHeader = styled.div`
@@ -196,15 +222,91 @@ const ChartContainer = styled.div`
   border-radius: ${theme.borderRadius.lg};
 `;
 
+const ActionRow = styled.div`
+  display: flex;
+  gap: ${theme.spacing.sm};
+  margin-top: 0;
+  height: 40px;
+  justify-content: flex-end;
+
+  .backtest-action-button {
+    flex: 0 0 48px;
+    width: 48px;
+    height: 40px;
+    padding: 0;
+  }
+`;
+
+const Field = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  justify-content: flex-start;
+  height: 100%;
+  width: 100%;
+`;
+
+const HiddenLabel = styled(Label)`
+  visibility: hidden;
+  margin-bottom: 0;
+`;
+
+const SrOnly = styled.span`
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  width: 1px;
+`;
+
+const CompactInput = styled(GlassInput)`
+  input {
+    height: 38px;
+    border-radius: 8px;
+    padding: 8px ${theme.spacing.sm};
+    font-size: 13px;
+  }
+`;
+
+const CardHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: ${theme.spacing.sm};
+`;
+
+const CardTitle = styled.h2`
+  margin: 0;
+  font-size: ${theme.typography.fontSize.h4};
+  color: ${theme.colors.textPrimary};
+  font-weight: 600;
+`;
+
+const CardSubtitle = styled.span`
+  color: ${theme.colors.textSecondary};
+  font-size: ${theme.typography.fontSize.caption};
+`;
+
+const ResultsWrapper = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.lg};
+`;
+
+const DEFAULT_BACKTEST_PARAMS: BacktestParams = {
+  start_date: '2020-01-01',
+  end_date: '2024-12-31',
+  factors: [],
+  rebalancing_frequency: 'weekly',
+  transaction_cost: 0.001,
+  quantile: 0.1,
+};
+
 const BacktestPage: React.FC = () => {
-  const [params, setParams] = useState<BacktestParams>({
-    start_date: '2020-01-01',
-    end_date: '2024-12-31',
-    factors: [],
-    rebalancing_frequency: 'weekly',
-    transaction_cost: 0.001,
-    quantile: 0.1,
-  });
+  const [params, setParams] = useState<BacktestParams>({ ...DEFAULT_BACKTEST_PARAMS });
 
   const [loading, setLoading] = useState(false);
   const [statusInfo, setStatusInfo] = useState<BacktestStatus | null>(null);
@@ -341,15 +443,23 @@ const BacktestPage: React.FC = () => {
     }
   };
 
+  const handleResetParams = useCallback(() => {
+    setParams({ ...DEFAULT_BACKTEST_PARAMS, factors: [] });
+    setResults(null);
+    setStatusInfo(null);
+    setActiveTaskId(null);
+  }, []);
+
   return (
     <PageWrapper>
-      <TitleRow>
-        <Title>백테스트</Title>
-      </TitleRow>
       <BacktestContainer>
-        <LeftPanel>
-          <GlassCard>
-            <FormGroup>
+        <ControlCard>
+          <CardHeader>
+            <CardTitle>전략 설정</CardTitle>
+            <CardSubtitle>필수 파라미터를 입력한 뒤 백테스트를 실행하세요.</CardSubtitle>
+          </CardHeader>
+          <FormGrid>
+            <Field>
               <Label>알파 팩터</Label>
               <StyledSelect
                 mode="multiple"
@@ -362,9 +472,9 @@ const BacktestPage: React.FC = () => {
                 options={groupedOptions}
                 onChange={(value) => setParams({ ...params, factors: value as string[] })}
               />
-            </FormGroup>
+            </Field>
 
-            <FormGroup>
+            <Field>
               <Label>기간</Label>
               <StyledRangePicker
                 value={[dayjs(params.start_date), dayjs(params.end_date)]}
@@ -378,9 +488,9 @@ const BacktestPage: React.FC = () => {
                   }
                 }}
               />
-            </FormGroup>
+            </Field>
 
-            <FormGroup>
+            <Field>
               <Label>리밸런싱 주기</Label>
               <StyledSelect
                 value={params.rebalancing_frequency}
@@ -392,11 +502,11 @@ const BacktestPage: React.FC = () => {
                   { value: 'quarterly', label: '분기' },
                 ]}
               />
-            </FormGroup>
+            </Field>
 
-            <FormGroup>
+            <Field>
               <Label>거래비용 (%)</Label>
-              <GlassInput
+              <CompactInput
                 type="number"
                 value={params.transaction_cost * 100}
                 min={0}
@@ -406,11 +516,11 @@ const BacktestPage: React.FC = () => {
                   transaction_cost: Number(e.target.value) / 100,
                 })}
               />
-            </FormGroup>
+            </Field>
 
-            <FormGroup>
+            <Field>
               <Label>분위수</Label>
-              <GlassInput
+              <CompactInput
                 type="number"
                 value={params.quantile}
                 min={0.01}
@@ -421,22 +531,38 @@ const BacktestPage: React.FC = () => {
                   quantile: Number(e.target.value),
                 })}
               />
-            </FormGroup>
+            </Field>
 
-            <GlassButton
-              variant="primary"
-              onClick={handleRunBacktest}
-              loading={loading}
-              disabled={loading}
-              icon={<PlayCircleOutlined />}
-            >
-              {loading ? '실행 중...' : '백테스트 실행'}
-            </GlassButton>
-          </GlassCard>
+            <Field>
+              <HiddenLabel>액션 버튼</HiddenLabel>
+              <ActionRow>
+                <GlassButton
+                  variant="secondary"
+                  onClick={handleResetParams}
+                  disabled={loading}
+                  icon={<ReloadOutlined />}
+                  className="backtest-action-button"
+                >
+                  <SrOnly>설정 초기화</SrOnly>
+                </GlassButton>
+                <GlassButton
+                  variant="primary"
+                  onClick={handleRunBacktest}
+                  loading={loading}
+                  disabled={loading}
+                  icon={<PlayCircleOutlined />}
+                  className="backtest-action-button"
+                >
+                  <SrOnly>백테스트 실행</SrOnly>
+                </GlassButton>
+              </ActionRow>
+            </Field>
+          </FormGrid>
+        </ControlCard>
 
-          <StatusCard>
-            <StatusHeader>
-              <StatusTitle>진행 상태</StatusTitle>
+        <StatusCard>
+          <StatusHeader>
+            <StatusTitle>백테스트 진행 상태</StatusTitle>
               <StatusMeta>
                 {statusInfo?.status === 'completed' && <Tag color="success">완료</Tag>}
                 {statusInfo?.status === 'failed' && <Tag color="error">실패</Tag>}
@@ -466,9 +592,8 @@ const BacktestPage: React.FC = () => {
               <EmptyLogs>표시할 로그가 없습니다.</EmptyLogs>
             )}
           </StatusCard>
-        </LeftPanel>
 
-        <RightPanel>
+        <ResultsWrapper>
           {statusInfo?.status === 'running' && (
             <ResultCard>
               <ResultTitle>백테스트가 진행 중입니다</ResultTitle>
@@ -556,7 +681,7 @@ const BacktestPage: React.FC = () => {
               </PlaceholderText>
             </ResultCard>
           )}
-        </RightPanel>
+        </ResultsWrapper>
       </BacktestContainer>
     </PageWrapper>
   );

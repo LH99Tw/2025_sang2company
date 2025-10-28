@@ -10,6 +10,7 @@ interface GlassButtonProps {
   loading?: boolean;
   icon?: ReactNode;
   className?: string;
+  style?: React.CSSProperties;
 }
 
 const PrimaryButton = styled.button`
@@ -25,6 +26,7 @@ const PrimaryButton = styled.button`
   transition: all ${theme.transitions.spring};
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   position: relative;
   overflow: hidden;
@@ -75,6 +77,7 @@ const SecondaryButton = styled.button`
   transition: all ${theme.transitions.spring};
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
 
   &:hover:not(:disabled) {
@@ -96,7 +99,8 @@ export const GlassButton: React.FC<GlassButtonProps> = ({
   disabled = false,
   loading = false,
   icon,
-  className
+  className,
+  style,
 }) => {
   const ButtonComponent = variant === 'primary' ? PrimaryButton : SecondaryButton;
 
@@ -105,10 +109,10 @@ export const GlassButton: React.FC<GlassButtonProps> = ({
       onClick={onClick} 
       disabled={disabled || loading}
       className={className}
+      style={style}
     >
       {icon && <span>{icon}</span>}
       {loading ? '로딩 중...' : children}
     </ButtonComponent>
   );
 };
-

@@ -294,7 +294,6 @@ export const Sidebar: React.FC = () => {
   ];
 
   const tradingItems = [
-    { path: '/my-investment', icon: <UserOutlined />, label: '내 투자' },
     { path: '/simulation', icon: <StockOutlined />, label: '모의투자' },
   ];
 

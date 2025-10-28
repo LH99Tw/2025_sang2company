@@ -1134,13 +1134,13 @@ export const Dashboard: React.FC = () => {
   }, [user, loadAlphas]);
 
   useEffect(() => {
-    if (activeTab === 2 && !heatmapData && !heatmapLoading) {
+    if (activeTab === 1 && !heatmapData && !heatmapLoading) {
       loadHeatmap();
     }
   }, [activeTab, heatmapData, heatmapLoading, loadHeatmap]);
 
 
-  const renderAssetOverview = () => {
+  const renderMarketPerformance = () => {
     const hasSeries = performanceSeries.length > 0 && selectedTickers.length > 0;
     const hasMetrics = performanceMetrics.length > 0;
 
@@ -1148,7 +1148,7 @@ export const Dashboard: React.FC = () => {
       <AnalyzerLayout>
         <AnalyzerColumn>
           <AnalyzerChartCard>
-            <ChartTitle>종목 누적 수익률 비교</ChartTitle>
+            <ChartTitle>시장 수익률</ChartTitle>
             <div style={{ display: 'flex', flexDirection: 'column', gap: theme.spacing.md }}>
               {missingTickers.length > 0 && (
                 <div
@@ -1647,12 +1647,12 @@ const renderSectorHeatmap = () => {
     <ChartCard>
       <HeatmapHeader>
         <div>
-          <ChartTitle>섹터 수익률 히트맵</ChartTitle>
-            <HeatmapInfoText>
-              기준일: {heatmapData?.date ?? '데이터 없음'}
-            </HeatmapInfoText>
-          </div>
-        </HeatmapHeader>
+          <ChartTitle>섹터별 수익률 트리맵</ChartTitle>
+          <HeatmapInfoText>
+            기준일: {heatmapData?.date ?? '데이터 없음'}
+          </HeatmapInfoText>
+        </div>
+      </HeatmapHeader>
 
         {heatmapLoading ? (
           <div style={{ textAlign: 'center', padding: theme.spacing.xl, color: theme.colors.textSecondary }}>
@@ -1738,17 +1738,17 @@ const renderSectorHeatmap = () => {
           시장 수익률
         </DynamicIslandButton>
         <DynamicIslandButton $active={activeTab === 1} onClick={() => setActiveTab(1)}>
-          알파 관리
+          섹터별 수익률
         </DynamicIslandButton>
         <DynamicIslandButton $active={activeTab === 2} onClick={() => setActiveTab(2)}>
-          섹터 히트맵
+          알파 관리
         </DynamicIslandButton>
       </DynamicIslandNav>
 
       <TabContent>
-        {activeTab === 0 && renderAssetOverview()}
-        {activeTab === 1 && renderAlphaManagement()}
-        {activeTab === 2 && renderSectorHeatmap()}
+        {activeTab === 0 && renderMarketPerformance()}
+        {activeTab === 1 && renderSectorHeatmap()}
+        {activeTab === 2 && renderAlphaManagement()}
       </TabContent>
 
       {/* 알파 추가/수정 모달 */}

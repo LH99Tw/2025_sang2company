@@ -1177,4 +1177,5 @@ allowed_fields = ['name', 'email', 'profile_emoji']
     - 히트맵 툴팁에서 변경률 텍스트를 서버가 내려준 `display_change` 문자열 그대로 노출해 포맷을 유지합니다. (`frontend/src/pages/Dashboard.tsx`)
     - 다음은 [38](20251027) 이후의 수정사항입니다.
         - 세부 뷰를 단일 대형 트리맵으로 다시 통합해 전체 시가총액 규모를 한눈에 비교할 수 있고, 섹터/산업 헤더는 최소 간격으로 오버레이됩니다. (`frontend/src/pages/Dashboard.tsx`)
-        - React ApexCharts 트리맵을 개편해 섹터 범례를 상단, 섹터 요약 칩을 하단에 배치하고, 각 종목 박스의 티커·수익률 텍스트 크기를 시총 비례로 조정했습니다. (`frontend/package.json`, `frontend/src/pages/Dashboard.tsx`)
+    - React ApexCharts 트리맵을 개편해 섹터 범례를 상단, 섹터 요약 칩을 하단에 배치하고, 각 종목 박스의 티커·수익률 텍스트 크기를 시총 비례로 조정했습니다. (`frontend/package.json`, `frontend/src/pages/Dashboard.tsx`)
+        - 대시보드 탭 순서를 시장 수익률 → 섹터별 수익률 트리맵 → 알파 관리로 재구성하고, 탭 라벨과 섹터 뷰 제목을 명확히 수정했습니다. (`frontend/src/pages/Dashboard.tsx`)

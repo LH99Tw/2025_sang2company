@@ -10,9 +10,10 @@ import {
   XAxis,
   YAxis,
   Tooltip as RechartsTooltip,
-  Treemap,
 } from 'recharts';
 import type { TooltipProps } from 'recharts';
+import ReactApexChart from 'react-apexcharts';
+import type { ApexOptions } from 'apexcharts';
 import dayjs, { Dayjs } from 'dayjs';
 import { useAuth } from '../contexts/AuthContext';
 import { Button, Input, Modal, Form, message, Popconfirm, Select, Tag, Tooltip, Pagination, DatePicker, Spin, Empty } from 'antd';
@@ -367,6 +368,32 @@ const formatChangePercent = (value: number): string => {
   return `${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%`;
 };
 
+interface ApexTreemapDatum {
+  x: string;
+  y: number;
+  fillColor?: string;
+  dataLabels?: {
+    style?: {
+      fontSize?: string;
+      fontWeight?: string | number;
+      colors?: string[];
+    };
+  };
+  meta: {
+    ticker: string;
+    name: string;
+    sector?: string;
+    industry?: string;
+    changeText?: string;
+    changeValue?: number;
+    price?: number;
+    marketCap?: number;
+    labelText?: string;
+  };
+}
+
+type ApexTreemapSeries = { name: string; data: ApexTreemapDatum[] };
+
 type HeatmapNodeType = 'sector' | 'industry' | 'ticker';
 
 interface DecoratedHeatmapNode {
@@ -378,6 +405,7 @@ interface DecoratedHeatmapNode {
   color: string;
   fill?: string;
   type: HeatmapNodeType;
+  kind?: HeatmapNodeType;
   label?: string;
   children?: DecoratedHeatmapNode[];
   sector?: string;
@@ -411,9 +439,11 @@ const decorateHeatmapTree = (nodes: any[], depth = 0, parentSector?: string): De
       change_pct: change,
       change_value: Number(node.change_value ?? 0) || 0,
       displayChange: display,
+      display_change: typeof node.display_change === 'string' ? node.display_change : display,
       color,
       fill: color,
       type,
+      kind: type,
       sector: sectorName,
       industry: industryName,
       ticker: node.ticker ?? node.name,
@@ -446,38 +476,160 @@ const formatMarketCap = (cap?: number): string => {
   return `${cap.toFixed(0)}`;
 };
 
+const ensurePositiveValue = (value?: number): number => {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 0.0001;
+  }
+  return numeric;
+};
+
+const SECTOR_COLOR_PALETTE = [
+  '#4F46E5',
+  '#0EA5E9',
+  '#10B981',
+  '#F97316',
+  '#EC4899',
+  '#8B5CF6',
+  '#6366F1',
+  '#22D3EE',
+  '#84CC16',
+  '#F59E0B',
+  '#14B8A6',
+  '#F87171',
+];
+
+const hexToRgb = (hex: string) => {
+  const normalized = hex.replace('#', '');
+  const full = normalized.length === 3
+    ? normalized.split('').map((ch) => ch + ch).join('')
+    : normalized.padEnd(6, '0');
+  const intVal = parseInt(full, 16);
+  return {
+    r: (intVal >> 16) & 255,
+    g: (intVal >> 8) & 255,
+    b: intVal & 255,
+  };
+};
+
+const rgbToHex = (r: number, g: number, b: number) => {
+  const clamp = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
+  return `#${[clamp(r), clamp(g), clamp(b)]
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('')}`;
+};
+
+const mixColors = (colorA: string, colorB: string, amount: number) => {
+  const ratio = Math.max(0, Math.min(1, amount));
+  const a = hexToRgb(colorA);
+  const b = hexToRgb(colorB);
+  return rgbToHex(
+    a.r + (b.r - a.r) * ratio,
+    a.g + (b.g - a.g) * ratio,
+    a.b + (b.b - a.b) * ratio,
+  );
+};
+
+const NEUTRAL_COLOR = '#3C4043';
+const NEGATIVE_BLEND = '#0F1115';
+const DIM_BLEND = '#2F3136';
+const LIGHT_BLEND = '#E5E7EB';
+
+const applySectorTone = (baseColor: string, changeValue?: number) => {
+  const clampChange = Math.max(-0.05, Math.min(0.05, Number(changeValue ?? 0)));
+  const ratio = Math.abs(clampChange) / 0.05;
+
+  if (clampChange >= 0) {
+    const startBlend = 0.2; // 20% 섹터 색으로 시작
+    const weight = startBlend + (0.95 - startBlend) * Math.pow(ratio, 0.7);
+    return mixColors(NEUTRAL_COLOR, baseColor, weight);
+  }
+
+  const tintWeight = 0.18 * (1 - Math.pow(ratio, 0.6));
+  const tinted = mixColors(NEUTRAL_COLOR, baseColor, tintWeight);
+  const lightened = mixColors(tinted, LIGHT_BLEND, ratio * 0.5);
+  const withDepth = mixColors(lightened, NEGATIVE_BLEND, ratio * 0.25);
+  return withDepth;
+};
+
+const collectTickerNodes = (
+  node: DecoratedHeatmapNode,
+  baseColor: string,
+  dimmed: boolean,
+): ApexTreemapDatum[] => {
+  if (!node.children || node.children.length === 0) {
+    const value = ensurePositiveValue(node.value);
+    const fontSize = Math.min(22, Math.max(10, Math.log10(value + 1) * 3 + 8));
+    const changeValue = node.change_pct ?? node.change ?? 0;
+    const changeText = node.display_change ?? formatChangePercent(changeValue);
+    const tickerSymbol = node.ticker ?? node.label ?? node.name;
+    const toneColor = applySectorTone(baseColor, changeValue);
+    const fillColor = dimmed ? mixColors(toneColor, DIM_BLEND, 0.6) : toneColor;
+    return [
+      {
+        x: tickerSymbol,
+        y: value,
+        fillColor,
+        dataLabels: {
+          style: {
+            fontSize: `${fontSize.toFixed(1)}px`,
+            fontWeight: 700,
+            colors: [dimmed ? '#6B7280' : '#F9FAFB'],
+          },
+        },
+        meta: {
+          ticker: tickerSymbol,
+          name: node.name,
+          sector: node.sector,
+          industry: node.industry,
+          changeText,
+          changeValue,
+          price: node.close,
+          marketCap: node.market_cap,
+          labelText: tickerSymbol,
+        },
+      },
+    ];
+  }
+
+  return node.children.flatMap((child) => collectTickerNodes(child, baseColor, dimmed));
+};
+
+const buildApexTreemapSeries = (
+  sectors: DecoratedHeatmapNode[],
+  activeSector: string | null,
+): { series: ApexTreemapSeries[]; colorMap: Record<string, string> } => {
+  const colorMap: Record<string, string> = {};
+  let paletteIndex = 0;
+
+  const ensureColor = (sectorName: string) => {
+    if (!colorMap[sectorName]) {
+      colorMap[sectorName] = SECTOR_COLOR_PALETTE[paletteIndex % SECTOR_COLOR_PALETTE.length];
+      paletteIndex += 1;
+    }
+    return colorMap[sectorName];
+  };
+
+  const series = sectors
+    .map((sector) => {
+      const sectorName = sector.label ?? sector.name;
+      const baseColor = ensureColor(sectorName);
+      const dimmed = Boolean(activeSector && activeSector !== sectorName);
+      const data = collectTickerNodes(sector, baseColor, dimmed);
+      if (!data.length) {
+        return null;
+      }
+      return {
+        name: sectorName,
+        data,
+      };
+    })
+    .filter((series): series is ApexTreemapSeries => Boolean(series));
+
+  return { series, colorMap };
+};
 
 
-const HeatmapLegend = styled.div`
-  display: flex;
-  align-items: center;
-  gap: ${theme.spacing.md};
-  flex-wrap: wrap;
-  color: ${theme.colors.textSecondary};
-  font-size: ${theme.typography.fontSize.caption};
-`;
-
-const HeatmapLegendScale = styled.div`
-  display: flex;
-  align-items: center;
-  gap: ${theme.spacing.xs};
-`;
-
-const HeatmapLegendItem = styled.div`
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  min-width: 36px;
-`;
-
-const HeatmapLegendColor = styled.span`
-  display: block;
-  width: 28px;
-  height: 12px;
-  border-radius: 4px;
-  border: 1px solid ${theme.colors.liquidGlassBorder};
-`;
 
 const HeatmapHeader = styled.div`
   display: flex;
@@ -492,200 +644,37 @@ const HeatmapInfoText = styled.span`
   font-size: ${theme.typography.fontSize.caption};
 `;
 
+
 const HeatmapWrapper = styled.div`
   width: 100%;
-  height: 680px;
+  min-height: 760px;
 `;
 
-const HeatmapTooltipContainer = styled.div`
-  background: ${theme.colors.backgroundSecondary};
-  border: 1px solid ${theme.colors.border};
-  border-radius: 8px;
-  padding: ${theme.spacing.sm} ${theme.spacing.md};
-  box-shadow: ${theme.shadows.soft};
+const SectorChipRow = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: ${theme.spacing.sm};
+  margin-bottom: ${theme.spacing.md};
+`;
+
+const SectorChip = styled.div<{ $color: string; $active: boolean; $dimmed: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  gap: ${theme.spacing.xs};
+  padding: 6px 12px;
+  border-radius: 12px;
+  background: ${({ $color }) => `${$color}22`};
+  border: ${({ $active }) => ($active ? '2px' : '1px')} solid ${({ $color }) => `${$color}80`};
   color: ${theme.colors.textPrimary};
-  max-width: 240px;
-`;
-
-const HeatmapTooltipTitle = styled.div`
-  font-weight: 600;
-  margin-bottom: ${theme.spacing.xs};
-  color: ${theme.colors.textPrimary};
-`;
-
-const HeatmapTooltipText = styled.div`
   font-size: ${theme.typography.fontSize.caption};
-  color: ${theme.colors.textSecondary};
+  opacity: ${({ $dimmed }) => ($dimmed ? 0.45 : 1)};
+  cursor: pointer;
+  transition: all 0.2s ease;
+  &:hover {
+    opacity: 1;
+    border-color: ${({ $color }) => `${$color}AA`};
+  }
 `;
-const HeatmapNode: React.FC<any> = (props) => {
-  const { depth, x, y, width, height, name, payload, fill: nodeFill } = props;
-  const dataNode = (payload?.payload ?? payload ?? {}) as DecoratedHeatmapNode;
-  const rawChange = dataNode?.change_pct ?? dataNode?.change ?? dataNode?.change_value;
-  const changeValue = Number(rawChange ?? 0) || 0;
-  const fillColor = nodeFill ?? dataNode?.fill ?? dataNode?.color ?? getHeatmapColor(changeValue);
-  const displayLabel = dataNode?.label ?? dataNode?.name ?? name;
-  const displayChange = dataNode?.displayChange ?? dataNode?.display_change ?? formatChangePercent(changeValue);
-
-
-  if (width <= 0 || height <= 0) {
-    return null;
-  }
-
-  if (depth === 1) {
-    return (
-      <g>
-        <rect
-          x={x}
-          y={y}
-          width={width}
-          height={height}
-          fill={fillColor}
-          stroke={theme.colors.border}
-          strokeWidth={1.2}
-        />
-        {width > 60 && height > 24 && (
-          <text
-            x={x + 12}
-            y={y + 22}
-            fill={theme.colors.textPrimary}
-            fontSize={16}
-            fontWeight={800}
-            style={{ paintOrder: 'stroke' }}
-            stroke='rgba(0,0,0,0.35)'
-            strokeWidth={3}
-            pointerEvents='none'
-          >
-            {displayLabel}
-          </text>
-        )}
-      </g>
-    );
-  }
-
-  if (depth === 2) {
-    const headerHeight = Math.min(28, Math.max(16, height * 0.18));
-    const headerColor = fillColor;
-    return (
-      <g>
-        <rect
-          x={x}
-          y={y}
-          width={width}
-          height={height}
-          fill={fillColor}
-          stroke={theme.colors.backgroundDark}
-          strokeWidth={0.7}
-        />
-        {width > 48 && height > headerHeight + 12 && (
-          <>
-            <rect
-              x={x}
-              y={y}
-              width={width}
-              height={headerHeight}
-              fill={`${headerColor}CC`}
-              pointerEvents="none"
-            />
-            <text
-              x={x + width / 2}
-              y={y + headerHeight / 2 + 4}
-              fill={theme.colors.textPrimary}
-              fontSize={Math.min(12, headerHeight - 8)}
-              fontWeight={700}
-              textAnchor="middle"
-              style={{ paintOrder: 'stroke' }}
-              stroke="rgba(0,0,0,0.35)"
-              strokeWidth={2}
-              pointerEvents="none"
-            >
-              {displayLabel}
-            </text>
-          </>
-        )}
-        {width > 56 && height > headerHeight + 24 && (
-          <text
-            x={x + width / 2}
-            y={y + headerHeight + 18}
-            fill={theme.colors.textSecondary}
-            fontSize={Math.min(12, headerHeight - 6)}
-            fontWeight={600}
-            textAnchor="middle"
-            pointerEvents="none"
-          >
-            {displayChange}
-          </text>
-        )}
-      </g>
-    );
-  }
-
-  const fill = fillColor;
-  const ticker = displayLabel;
-  const textColor = '#F9FAFB';
-  const centerX = x + width / 2;
-  const centerY = y + height / 2;
-  const tickerFont = Math.max(10, Math.min( Math.floor(width / 4.5), Math.floor(height / 2.8), 22));
-
-  return (
-    <g>
-      <rect
-        x={x}
-        y={y}
-        width={width}
-        height={height}
-        fill={fill}
-        stroke={theme.colors.backgroundDark}
-        strokeWidth={0.6}
-        rx={2}
-        ry={2}
-      />
-      {width > 24 && height > 18 && (
-        <text
-          x={centerX}
-          y={centerY - 2}
-          fill={textColor}
-          fontSize={tickerFont}
-          fontWeight={700}
-          textAnchor="middle"
-          dominantBaseline="central"
-          style={{ paintOrder: 'stroke' }}
-          stroke="rgba(0,0,0,0.45)"
-          strokeWidth={2}
-          pointerEvents="none"
-        >
-          {ticker}
-        </text>
-      )}
-    </g>
-  );
-};
-
-const renderHeatmapTooltip: React.FC<TooltipProps<number, string>> = ({ active, payload }) => {
-  if (!active || !payload || payload.length === 0) {
-    return null;
-  }
-
-  const node = payload[0]?.payload?.payload ?? payload[0]?.payload;
-  if (!node || Array.isArray(node.children)) {
-    return null;
-  }
-
-  const display = node.displayChange ?? node.display_change ?? formatChangePercent(node.change_pct ?? node.change ?? 0);
-
-  return (
-    <HeatmapTooltipContainer>
-      <HeatmapTooltipTitle>
-        {node.label || node.name}
-      </HeatmapTooltipTitle>
-      <HeatmapTooltipText>변동: {display}</HeatmapTooltipText>
-      <HeatmapTooltipText>가격: ${node.close?.toFixed?.(2) ?? '-'}</HeatmapTooltipText>
-      <HeatmapTooltipText>시가총액: {formatMarketCap(node.market_cap)}</HeatmapTooltipText>
-      {node.sector && <HeatmapTooltipText>섹터: {node.sector}</HeatmapTooltipText>}
-      {node.industry && <HeatmapTooltipText>산업: {node.industry}</HeatmapTooltipText>}
-    </HeatmapTooltipContainer>
-  );
-};
-
 
 export const Dashboard: React.FC = () => {
   const { user } = useAuth();
@@ -704,6 +693,9 @@ export const Dashboard: React.FC = () => {
   const [performanceLoading, setPerformanceLoading] = useState(false);
   const [autoAnalyzeQueued, setAutoAnalyzeQueued] = useState(false);
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([dayjs('2000-01-01'), dayjs()]);
+  const [legendHoverSector, setLegendHoverSector] = useState<string | null>(null);
+  const [legendLockedSector, setLegendLockedSector] = useState<string | null>(null);
+  const [activeSectorFromLegend, setActiveSectorFromLegend] = useState<string | null>(null);
 
   const ensureTickerColors = useCallback((tickers: string[]) => {
     setTickerColors((prev) => {
@@ -858,6 +850,167 @@ export const Dashboard: React.FC = () => {
   const [alphaPage, setAlphaPage] = useState(1);
   const alphaPageSize = 10;
   const [alphaForm] = Form.useForm();
+
+  const sectorNodes = useMemo(
+    () => (heatmapData?.sectors ?? []) as DecoratedHeatmapNode[],
+    [heatmapData?.sectors]
+  );
+
+  const activeLegendSector = legendLockedSector ?? legendHoverSector;
+
+  const highlightSector = activeLegendSector ?? activeSectorFromLegend;
+
+  const { series: apexHeatmapSeries, colorMap: sectorColorMap } = useMemo(() => {
+    return buildApexTreemapSeries(sectorNodes, highlightSector ?? null);
+  }, [sectorNodes, highlightSector]);
+
+  const sectorSummaries = useMemo(
+    () =>
+      apexHeatmapSeries.map((series) => {
+        const totalValue = series.data.reduce((sum, item) => sum + item.y, 0);
+        const weightedChange =
+          totalValue > 0
+            ? series.data.reduce((acc, item) => acc + (item.meta.changeValue ?? 0) * item.y, 0) / totalValue
+            : 0;
+        return {
+          name: series.name,
+          color: sectorColorMap[series.name] ?? theme.colors.accentPrimary,
+          totalValue,
+          changeValue: weightedChange,
+          changeText: formatChangePercent(weightedChange),
+        };
+      }),
+    [apexHeatmapSeries, sectorColorMap]
+  );
+
+  const handleSectorChipEnter = useCallback((name: string) => {
+    if (legendLockedSector) return;
+    setLegendHoverSector(name);
+  }, [legendLockedSector]);
+
+  const handleSectorChipLeave = useCallback(() => {
+    if (legendLockedSector) return;
+    setLegendHoverSector(null);
+  }, [legendLockedSector]);
+
+  const handleSectorChipClick = useCallback((name: string) => {
+    setLegendLockedSector((prev) => (prev === name ? null : name));
+    setLegendHoverSector(null);
+    setActiveSectorFromLegend(null);
+  }, []);
+
+  const handleLegendClick = useCallback((seriesIndex: number, opts: any) => {
+    const seriesArr = opts?.config?.series as ApexTreemapSeries[] | undefined;
+    const seriesName = seriesArr?.[seriesIndex]?.name;
+    if (!seriesName) return;
+    setActiveSectorFromLegend((prev) => (prev === seriesName ? null : seriesName));
+    setLegendLockedSector(null);
+    setLegendHoverSector(null);
+  }, []);
+
+  const apexHeatmapOptions = useMemo<ApexOptions>(() => {
+    return {
+      chart: {
+        type: 'treemap',
+        background: 'transparent',
+        toolbar: { show: false },
+        animations: { enabled: false },
+        fontFamily: theme.typography.fontFamily.primary,
+      },
+      legend: {
+        show: true,
+        position: 'top',
+        onItemClick: {
+          toggleDataSeries: false,
+        },
+        labels: {
+          colors: theme.colors.textSecondary,
+        },
+        itemMargin: {
+          horizontal: 12,
+          vertical: 4,
+        },
+        formatter: (seriesName, opts) => {
+          return `<span data-legend-index="${opts.seriesIndex}">${seriesName}</span>`;
+        },
+      },
+      colors: apexHeatmapSeries.map((series) => sectorColorMap[series.name] ?? theme.colors.accentPrimary),
+      dataLabels: {
+        enabled: true,
+        style: {
+          fontSize: '14px',
+          fontWeight: 700,
+          colors: ['#F9FAFB'],
+        },
+        formatter: (_value, opts) => {
+          const series = opts.w.config.series as ApexTreemapSeries[] | undefined;
+          const datum = series?.[opts.seriesIndex]?.data?.[opts.dataPointIndex] as ApexTreemapDatum | undefined;
+          return datum?.meta?.labelText ?? datum?.meta?.ticker ?? '';
+        },
+      },
+      tooltip: {
+        theme: 'dark',
+        custom: ({ seriesIndex, dataPointIndex, w }) => {
+          const series = w.config.series as ApexTreemapSeries[] | undefined;
+          const datum = series?.[seriesIndex]?.data?.[dataPointIndex] as ApexTreemapDatum | undefined;
+          if (!datum) {
+            return '';
+          }
+          const meta = datum.meta;
+          const lines: string[] = [];
+          lines.push(`<div style="font-weight:700;margin-bottom:4px;">${meta.ticker}${meta.name && meta.name !== meta.ticker ? ` · ${meta.name}` : ''}</div>`);
+          if (meta.changeText) {
+            lines.push(`<div>변동: ${meta.changeText}</div>`);
+          }
+          if (typeof meta.price === 'number' && Number.isFinite(meta.price)) {
+            lines.push(`<div>가격: $${meta.price.toFixed(2)}</div>`);
+          }
+          lines.push(`<div>시가총액: ${formatMarketCap(meta.marketCap)}</div>`);
+          if (meta.sector) {
+            lines.push(`<div>섹터: ${meta.sector}</div>`);
+          }
+          if (meta.industry) {
+            lines.push(`<div>산업: ${meta.industry}</div>`);
+          }
+          return `
+            <div style="background:${theme.colors.backgroundSecondary};border:1px solid ${theme.colors.border};border-radius:8px;padding:8px 12px;color:${theme.colors.textPrimary};font-size:${theme.typography.fontSize.caption};min-width:180px;">
+              ${lines.join('')}
+            </div>
+          `;
+        },
+      },
+      plotOptions: {
+        treemap: {
+          enableShades: true,
+          shadeIntensity: 0.4,
+          reverseNegativeShade: true,
+          useFillColorAsStroke: true,
+          stroke: {
+            width: 1,
+            colors: [theme.colors.backgroundDark],
+          },
+          dataLabels: {
+            format: 'truncate',
+          },
+          colorScale: {
+            ranges: [
+              { from: -100, to: -0.0001, color: '#CD363A' },
+              { from: -0.0001, to: 0.0001, color: '#3C4043' },
+              { from: 0.0001, to: 100, color: '#128A5E' },
+            ],
+          },
+        },
+      },
+      noData: {
+        text: '히트맵 데이터를 불러오는 중입니다...',
+        align: 'center',
+        verticalAlign: 'middle',
+        style: {
+          color: theme.colors.textSecondary,
+        },
+      },
+    };
+  }, [apexHeatmapSeries, sectorColorMap, handleLegendClick]);
 
 
   // 알파 관리 함수들
@@ -1487,29 +1640,18 @@ export const Dashboard: React.FC = () => {
     );
   };
 
-  const renderSectorHeatmap = () => {
-    const sectors = heatmapData?.sectors ?? [];
-    const legendMarks = [-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03];
-    return (
-      <ChartCard>
-        <HeatmapHeader>
-          <div>
-            <ChartTitle>섹터 수익률 히트맵</ChartTitle>
+const renderSectorHeatmap = () => {
+  const sectors = heatmapData?.sectors ?? [];
+
+  return (
+    <ChartCard>
+      <HeatmapHeader>
+        <div>
+          <ChartTitle>섹터 수익률 히트맵</ChartTitle>
             <HeatmapInfoText>
               기준일: {heatmapData?.date ?? '데이터 없음'}
             </HeatmapInfoText>
           </div>
-          <HeatmapLegend>
-            <span>일간 수익률</span>
-            <HeatmapLegendScale>
-              {legendMarks.map((mark) => (
-                <HeatmapLegendItem key={mark}>
-                  <HeatmapLegendColor style={{ background: getHeatmapColor(mark) }} />
-                  <span>{mark > 0 ? '+' : ''}{(mark * 100).toFixed(0)}%</span>
-                </HeatmapLegendItem>
-              ))}
-            </HeatmapLegendScale>
-          </HeatmapLegend>
         </HeatmapHeader>
 
         {heatmapLoading ? (
@@ -1522,25 +1664,72 @@ export const Dashboard: React.FC = () => {
           </div>
         ) : sectors.length === 0 ? (
           <Empty description="표시할 데이터가 없습니다." />
+        ) : apexHeatmapSeries.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: theme.spacing.xl, color: theme.colors.textSecondary }}>
+            표시 가능한 티커 데이터가 없습니다.
+          </div>
         ) : (
           <HeatmapWrapper>
-            <ResponsiveContainer width="100%" height="100%">
-              <Treemap
-                data={sectors}
-                dataKey="value"
-                nameKey="name"
-                stroke={theme.colors.backgroundDark}
-                isAnimationActive={false}
-                content={<HeatmapNode />}
-              >
-                <RechartsTooltip content={renderHeatmapTooltip} />
-              </Treemap>
-            </ResponsiveContainer>
+            <ReactApexChart
+              options={apexHeatmapOptions}
+              series={apexHeatmapSeries as unknown as ApexAxisChartSeries}
+              type="treemap"
+              height={820}
+            />
+            {sectorSummaries.length > 0 && (
+              <SectorChipRow style={{ marginTop: theme.spacing.md }}>
+                {sectorSummaries.map((sector) => {
+                  const isActive = Boolean(highlightSector && highlightSector === sector.name);
+                  const isDimmed = Boolean(highlightSector && highlightSector !== sector.name);
+                  return (
+                    <SectorChip
+                      key={sector.name}
+                      $color={sector.color ?? theme.colors.accentPrimary}
+                      $active={isActive}
+                      $dimmed={isDimmed}
+                      onMouseEnter={() => handleSectorChipEnter(sector.name)}
+                      onMouseLeave={handleSectorChipLeave}
+                      onClick={() => handleSectorChipClick(sector.name)}
+                    >
+                      <span style={{ fontWeight: 700 }}>{sector.name}</span>
+                      <span style={{ color: theme.colors.textSecondary }}>
+                        {formatMarketCap(sector.totalValue)}
+                      </span>
+                      <span
+                        style={{
+                          color: (sector.changeValue ?? 0) < 0 ? theme.colors.error : theme.colors.success,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {sector.changeText}
+                      </span>
+                    </SectorChip>
+                  );
+                })}
+              </SectorChipRow>
+            )}
           </HeatmapWrapper>
         )}
       </ChartCard>
     );
   };
+
+  useEffect(() => {
+    const handler = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      const parentLegend = target?.closest('.apexcharts-legend');
+      if (!parentLegend) {
+        setActiveSectorFromLegend(null);
+        setLegendLockedSector(null);
+        setLegendHoverSector(null);
+      }
+    };
+
+    document.addEventListener('click', handler);
+    return () => {
+      document.removeEventListener('click', handler);
+    };
+  }, []);
 
   return (
     <DashboardContainer>

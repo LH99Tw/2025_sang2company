@@ -1176,6 +1176,5 @@ allowed_fields = ['name', 'email', 'profile_emoji']
     - Dashboard 트리맵 노드 렌더러를 교체해 섹터/산업 상단에 불투명 헤더 바를 먼저 그리고 그 아래 종목 레이블이 겹치지 않도록 처리했습니다. (`frontend/src/pages/Dashboard.tsx`)
     - 히트맵 툴팁에서 변경률 텍스트를 서버가 내려준 `display_change` 문자열 그대로 노출해 포맷을 유지합니다. (`frontend/src/pages/Dashboard.tsx`)
     - 다음은 [38](20251027) 이후의 수정사항입니다.
-        - 헤더 높이를 타일 크기에 맞춰 보정하고 표시 조건을 조정해 작은 섹터·산업 타일에서도 라벨이 자연스럽게 노출됩니다. (`frontend/src/pages/Dashboard.tsx`)
-        - 종목/섹터 라벨과 수익률 텍스트가 기본 렌더 경로에서 바로 그려지도록 복원해 Treemap 레이어 위에 정확히 표시됩니다. (`frontend/src/pages/Dashboard.tsx`)
-        - 종목 타일에서는 티커만 남기고 수익률 텍스트는 제거해 시각적 대비를 간소화했습니다. (`frontend/src/pages/Dashboard.tsx`)
+        - 세부 뷰를 단일 대형 트리맵으로 다시 통합해 전체 시가총액 규모를 한눈에 비교할 수 있고, 섹터/산업 헤더는 최소 간격으로 오버레이됩니다. (`frontend/src/pages/Dashboard.tsx`)
+        - React ApexCharts 트리맵을 개편해 섹터 범례를 상단, 섹터 요약 칩을 하단에 배치하고, 각 종목 박스의 티커·수익률 텍스트 크기를 시총 비례로 조정했습니다. (`frontend/package.json`, `frontend/src/pages/Dashboard.tsx`)

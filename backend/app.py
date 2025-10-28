@@ -1091,6 +1091,41 @@ def get_alpha_registry(username: Optional[str] = None) -> AlphaRegistry:
     return registry
 
 
+def infer_alpha_group(definition) -> Tuple[str, str]:
+    """Derive a stable group identifier/label for the given alpha definition."""
+    metadata = dict(definition.metadata or {})
+    provider = (definition.provider or metadata.get("provider") or "custom").lower()
+    family = metadata.get("family")
+    tags = metadata.get("tags") or definition.tags or []
+    owner = metadata.get("owner") or definition.owner
+
+    def _sanitize(value: str) -> str:
+        return value.lower().replace(" ", "_")
+
+    if family:
+        group_id = f"{provider}:{_sanitize(str(family))}"
+        label = f"{provider.upper()} · {str(family).replace('_', ' ').title()}"
+    elif tags:
+        primary_tag = _sanitize(str(tags[0]))
+        group_id = f"{provider}:{primary_tag}"
+        label = f"{provider.upper()} · {str(tags[0]).title()}"
+    elif provider == "worldquant101":
+        group_id = "worldquant101"
+        label = "WorldQuant 101"
+    elif provider == "qlib":
+        group_id = "qlib"
+        label = "Qlib Factor Library"
+    elif provider.startswith("user"):
+        group_id = provider
+        user_label = owner or provider.replace("user", "").strip(":") or "User"
+        label = f"User · {user_label}"
+    else:
+        group_id = provider
+        label = provider.title()
+
+    return group_id, label
+
+
 def serialize_alpha_definition(definition) -> Dict[str, Any]:
     """Convert an AlphaDefinition into a serializable dict."""
     payload = definition.as_dict()
@@ -1103,6 +1138,10 @@ def serialize_alpha_definition(definition) -> Dict[str, Any]:
     payload["updated_at"] = metadata.get("updated_at")
     payload["owner"] = metadata.get("owner") or payload.get("owner")
     payload["tags"] = list(payload.get("tags", []))
+    group_id, group_label = infer_alpha_group(definition)
+    payload["group_id"] = group_id
+    payload["group_label"] = group_label
+    payload["provider"] = definition.provider
     return payload
 
 
@@ -2398,10 +2437,28 @@ def get_incubator_session(session_id: str):
 
 @app.route('/api/data/factors', methods=['GET'])
 def get_factors():
-    """사용 가능한 알파 팩터 목록 조회"""
+    """사용 가능한 알파 팩터 및 그룹 목록 조회"""
     try:
-        definitions = SHARED_ALPHA_REGISTRY.list(source='shared')
+        username = session.get('username')
+        registry = get_alpha_registry(username)
+        definitions = list(registry.iter_definitions())
         alpha_columns = [definition.name for definition in definitions]
+
+        metadata_payload: List[Dict[str, Any]] = []
+        groups: Dict[str, Dict[str, Any]] = {}
+
+        for definition in definitions:
+            serialized = serialize_alpha_definition(definition)
+            metadata_payload.append(serialized)
+            group_id = serialized.get('group_id') or 'ungrouped'
+            group_label = serialized.get('group_label') or '기타'
+            if group_id not in groups:
+                groups[group_id] = {
+                    'id': group_id,
+                    'label': group_label,
+                    'count': 0,
+                }
+            groups[group_id]['count'] += 1
 
         if not alpha_columns:
             # 레지스트리가 비어있는 것은 비정상 상황이므로 기존 CSV 기반 fallback 유지
@@ -2414,14 +2471,17 @@ def get_factors():
                     logger.warning("CSV 기반 알파 목록 추출 실패: %s", e)
             if not alpha_columns:
                 alpha_columns = [f'alpha{i:03d}' for i in range(1, 102) if i not in [48, 56, 58, 59, 63, 67, 69, 70, 76, 79, 80, 82, 87, 89, 90, 91, 93, 97, 100]]
-        
+
+        group_list = sorted(groups.values(), key=lambda item: item['label'].lower())
+
         return jsonify({
             'success': True,
             'factors': alpha_columns,
             'total_count': len(alpha_columns),
-            'metadata': [serialize_alpha_definition(defn) for defn in definitions]
+            'metadata': metadata_payload,
+            'groups': group_list,
         })
-        
+
     except Exception as e:
         logger.error(f"팩터 조회 오류: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -2609,119 +2669,524 @@ def get_ticker_performance():
         logger.error("종목 성과 분석 오류: %s", e, exc_info=True)
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/api/market/heatmap', methods=['GET'])
+def get_market_heatmap():
+    """섹터/인더스트리 기준 히트맵 데이터를 생성합니다."""
+    try:
+        price_file = os.path.join(PROJECT_ROOT, 'database', 'sp500_interpolated.csv')
+        info_file = os.path.join(PROJECT_ROOT, 'database', 'sp500_stock_info.csv')
+
+        if not os.path.exists(price_file) or not os.path.exists(info_file):
+            return jsonify({'error': '시장 데이터 파일을 찾을 수 없습니다.'}), 404
+
+        price_cols = ['Date', 'Ticker', 'Close']
+        price_df = pd.read_csv(price_file, usecols=price_cols, parse_dates=['Date'])
+        price_df['Ticker'] = price_df['Ticker'].astype(str).str.upper()
+        price_df = price_df.sort_values(['Ticker', 'Date']).reset_index(drop=True)
+
+        price_df['PrevClose'] = price_df.groupby('Ticker')['Close'].shift(1)
+        price_df['DailyChange'] = price_df['Close'] - price_df['PrevClose']
+        price_df['DailyChangePct'] = np.where(
+            price_df['PrevClose'].notna() & (price_df['PrevClose'] != 0),
+            price_df['DailyChange'] / price_df['PrevClose'],
+            0.0,
+        )
+
+        latest_date = price_df['Date'].max()
+        latest_df = price_df[price_df['Date'] == latest_date].copy()
+        if latest_df.empty:
+            return jsonify({'error': '가용한 시장 데이터가 없습니다.'}), 400
+
+        info_df = pd.read_csv(info_file)
+        info_df['Ticker'] = info_df['Ticker'].astype(str).str.upper()
+
+        merged = pd.merge(
+            latest_df,
+            info_df[['Ticker', 'Company_Name', 'Sector', 'Industry', 'Market_Cap']],
+            on='Ticker',
+            how='left',
+        )
+
+        merged['Sector'] = merged['Sector'].fillna('Unknown')
+        merged['Industry'] = merged['Industry'].fillna('Unknown')
+        merged['Company_Name'] = merged['Company_Name'].fillna(merged['Ticker'])
+
+        merged['Market_Cap'] = pd.to_numeric(merged['Market_Cap'], errors='coerce')
+        valid_caps = merged['Market_Cap'][merged['Market_Cap'] > 0]
+        if valid_caps.empty:
+            fallback_cap = 1.0
+            merged['Market_Cap'] = fallback_cap
+            valid_caps = merged['Market_Cap']
+        else:
+            fallback_cap = float(valid_caps.median())
+            merged['Market_Cap'] = merged['Market_Cap'].fillna(fallback_cap).replace(0, fallback_cap)
+
+        use_log_scale = False
+        merged['SizeValue'] = merged['Market_Cap']
+
+        merged['SizeValue'] = merged['SizeValue'].replace([np.inf, -np.inf], np.nan).fillna(1.0)
+        merged['DailyChangePct'] = merged['DailyChangePct'].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        merged['DailyChange'] = merged['DailyChange'].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        def clamp_change(value: float, limit: float = 0.03) -> float:
+            if value is None or not np.isfinite(value):
+                return 0.0
+            return float(max(-limit, min(limit, value)))
+
+        def heatmap_color(value: float) -> str:
+            clamped = clamp_change(value)
+            abs_val = abs(clamped)
+            ratio = min(abs_val / 0.03, 1.0)
+            if abs_val < 1e-4:
+                return '#2f3136'
+            saturation = 60 + ratio * 28
+            lightness = 46 - ratio * 24
+            if clamped >= 0:
+                hue = 135 - ratio * 10
+            else:
+                hue = 355 + ratio * 5
+            return f"hsl({hue:.2f}, {saturation:.2f}%, {lightness:.2f}%)"
+
+        def format_change(value: float) -> str:
+            pct = (value or 0.0) * 100.0
+            return f"{pct:+.2f}%"
+
+        sectors: List[Dict[str, Any]] = []
+        for sector, sector_df in merged.groupby('Sector'):
+            industries: List[Dict[str, Any]] = []
+            for industry, industry_df in sector_df.groupby('Industry'):
+                tickers: List[Dict[str, Any]] = []
+                for _, row in industry_df.iterrows():
+                    value = float(row['SizeValue'])
+                    if not np.isfinite(value) or value <= 0:
+                        value = 1.0
+                    change_pct = float(row['DailyChangePct'])
+                    change_value = float(row['DailyChange'])
+                    color = heatmap_color(change_pct)
+                    ticker_payload = {
+                        'name': row['Ticker'],
+                        'label': row['Company_Name'],
+                        'value': value,
+                        'change_pct': change_pct,
+                        'change_value': change_value,
+                        'display_change': format_change(change_pct),
+                        'color': color,
+                        'close': float(row['Close']),
+                        'market_cap': float(row['Market_Cap']),
+                        'sector': sector,
+                        'industry': industry,
+                    }
+                    tickers.append(ticker_payload)
+
+                industry_value = float(sum(child['value'] for child in tickers)) if tickers else 0.0
+                industry_weighted_change = (
+                    sum(child['change_pct'] * child['value'] for child in tickers) if tickers else 0.0
+                )
+                industry_change_pct = industry_weighted_change / industry_value if industry_value else 0.0
+                industry_change_value = float(sum(child['change_value'] for child in tickers)) if tickers else 0.0
+                industry_color = heatmap_color(industry_change_pct)
+                industries.append({
+                    'name': industry,
+                    'value': industry_value,
+                    'change_pct': industry_change_pct,
+                    'change_value': industry_change_value,
+                    'display_change': format_change(industry_change_pct),
+                    'color': industry_color,
+                    'children': tickers,
+                })
+
+            sector_value = float(sum(child['value'] for child in industries)) if industries else 0.0
+            sector_weighted_change = (
+                sum((child.get('change_pct', 0.0) or 0.0) * child['value'] for child in industries) if industries else 0.0
+            )
+            sector_change_pct = sector_weighted_change / sector_value if sector_value else 0.0
+            sector_change_value = float(sum(child.get('change_value', 0.0) for child in industries)) if industries else 0.0
+            sector_color = heatmap_color(sector_change_pct)
+            sectors.append({
+                'name': sector,
+                'value': sector_value,
+                'change_pct': sector_change_pct,
+                'change_value': sector_change_value,
+                'display_change': format_change(sector_change_pct),
+                'color': sector_color,
+                'children': industries,
+            })
+
+        sectors.sort(key=lambda item: item['value'], reverse=True)
+
+        return jsonify({
+            'success': True,
+            'date': latest_date.strftime('%Y-%m-%d'),
+            'use_log_scale': False,
+            'sectors': sectors,
+        })
+
+    except Exception as e:
+        logger.error("시장 히트맵 계산 오류: %s", e, exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/portfolio/stocks', methods=['POST'])
 def get_portfolio_stocks():
-    """포트폴리오용 종목 선별"""
+    """알파 가중치를 반영해 상위 종목을 선별합니다."""
     try:
-        data = request.get_json()
-        alpha_factor = data.get('alpha_factor', 'alpha001')
-        top_percentage = data.get('top_percentage', None)  # 상위 몇 % (기존 호환성)
-        top_count = data.get('top_count', None)  # 상위 몇 개 (새로운 방식)
-        date = data.get('date', None)  # 특정 날짜, None이면 최신 날짜
-        
-        # 알파 데이터 파일 로드
+        data = request.get_json() or {}
+        alpha_factor = data.get('alpha_factor')
+        alpha_factors = data.get('alpha_factors', [])
+        alpha_weights = data.get('alpha_weights', {})
+        selection_method = data.get('selection_method')
+        top_percentage = data.get('top_percentage')
+        top_count = data.get('top_count')
+        as_of_date = data.get('as_of_date')
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+        include_breakdown = bool(data.get('include_breakdown', True))
+
+        def _extend(container: List[str], values: Any):
+            if isinstance(values, str) and values:
+                container.append(values)
+            elif isinstance(values, list):
+                for item in values:
+                    if isinstance(item, str) and item:
+                        container.append(item)
+
+        selected_factors: List[str] = []
+        _extend(selected_factors, alpha_factor)
+        _extend(selected_factors, alpha_factors)
+
+        username = session.get('username')
+        registry = get_alpha_registry(username)
+        definitions = list(registry.iter_definitions())
+
+        factor_metadata: Dict[str, Dict[str, Any]] = {}
+        for definition in definitions:
+            factor_metadata[definition.name] = serialize_alpha_definition(definition)
+
+        selected_factors = list(dict.fromkeys(selected_factors))
+
+        if not selected_factors:
+            return jsonify({'error': '선택된 알파가 없습니다. 알파를 하나 이상 지정해주세요.'}), 400
+
         alpha_file = os.path.join(PROJECT_ROOT, 'database', 'sp500_with_alphas.csv')
-        
         if not os.path.exists(alpha_file):
             return jsonify({'error': '알파 데이터 파일을 찾을 수 없습니다'}), 404
-        
-        # 데이터 로드 (샘플링으로 성능 최적화)
+
         df = pd.read_csv(alpha_file)
-        
-        # 선택된 알파 팩터가 존재하는지 확인
-        if alpha_factor not in df.columns:
-            alpha_columns = [col for col in df.columns if col.startswith('alpha')]
-            return jsonify({
-                'error': f'{alpha_factor}를 찾을 수 없습니다',
-                'available_factors': alpha_columns[:20]
-            }), 400
-        
-        # 날짜 처리
+
+        available_columns = set(df.columns)
+        missing_factors = [factor for factor in selected_factors if factor not in available_columns]
+        available_factors = [factor for factor in selected_factors if factor in available_columns]
+        missing_factor_errors: Dict[str, str] = {}
+
+        window_start: Optional[pd.Timestamp]
+        window_end: Optional[pd.Timestamp]
+        if as_of_date and not start_date and not end_date:
+            start_date = as_of_date
+            end_date = as_of_date
+
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'])
-            
-            if date:
-                # 특정 날짜 사용
-                target_date = pd.to_datetime(date)
-                df_filtered = df[df['Date'] == target_date]
-                if len(df_filtered) == 0:
-                    # 해당 날짜가 없으면 가장 가까운 날짜 사용
-                    available_dates = df['Date'].unique()
-                    closest_date = min(available_dates, key=lambda x: abs(x - target_date))
-                    df_filtered = df[df['Date'] == closest_date]
-                    logger.warning(f"요청한 날짜 {date}를 찾을 수 없어 {closest_date}를 사용합니다")
+            df = df.sort_values(['Date', 'Ticker']).reset_index(drop=True)
+
+            max_date = df['Date'].max()
+            min_date = df['Date'].min()
+
+            if start_date:
+                try:
+                    window_start = pd.to_datetime(start_date)
+                except Exception:
+                    return jsonify({'error': 'start_date 형식이 올바르지 않습니다'}), 400
             else:
-                # 최신 날짜 사용
-                latest_date = df['Date'].max()
-                df_filtered = df[df['Date'] == latest_date]
+                window_start = max_date
+
+            if end_date:
+                try:
+                    window_end = pd.to_datetime(end_date)
+                except Exception:
+                    return jsonify({'error': 'end_date 형식이 올바르지 않습니다'}), 400
+            else:
+                window_end = max_date
+
+            if window_start > window_end:
+                return jsonify({'error': 'start_date는 end_date보다 앞서야 합니다'}), 400
+
+            effective_start = max(window_start, min_date)
+            effective_end = min(window_end, max_date)
+
+            window_df = df[(df['Date'] >= effective_start) & (df['Date'] <= effective_end)].copy()
+
+            if window_df.empty:
+                fallback = df[df['Date'] <= effective_end]['Date'].max()
+                if pd.isna(fallback):
+                    fallback = max_date
+                effective_start = effective_end = fallback
+                window_df = df[df['Date'] == fallback].copy()
         else:
-            # Date 컬럼이 없으면 전체 데이터 사용
-            df_filtered = df.copy()
-            latest_date = '최신'
-        
-        # 결측값 제거
-        df_filtered = df_filtered.dropna(subset=[alpha_factor, 'Ticker'])
-        
-        if len(df_filtered) == 0:
-            return jsonify({'error': '해당 조건에 맞는 데이터가 없습니다'}), 400
-        
-        # 알파 팩터 값으로 정렬 (내림차순)
-        df_sorted = df_filtered.sort_values(alpha_factor, ascending=False)
-        
-        # 상위 종목 계산 방식 결정
-        total_stocks = len(df_sorted)
-        
+            effective_start = None
+            effective_end = None
+            window_df = df.copy()
+
+        if missing_factors:
+            try:
+                price_file = os.path.join(PROJECT_ROOT, 'database', 'sp500_interpolated.csv')
+                price_cols = ['Date', 'Ticker', 'Open', 'High', 'Low', 'Close', 'Volume']
+                price_frame = pd.read_csv(price_file, usecols=price_cols, parse_dates=['Date'])
+                price_frame = price_frame.sort_values(['Date', 'Ticker']).reset_index(drop=True)
+                if effective_end:
+                    price_frame = price_frame[price_frame['Date'] <= effective_end]
+                compute_frames: List[pd.DataFrame] = []
+                for factor in missing_factors:
+                    try:
+                        computed = compute_factor_series_from_registry(factor, registry, price_frame)
+                        if effective_start:
+                            computed = computed[computed['Date'] >= effective_start]
+                        if effective_end:
+                            computed = computed[computed['Date'] <= effective_end]
+                        compute_frames.append(computed[['Date', 'Ticker', factor]])
+                    except Exception as exc:  # pragma: no cover - diagnostic logging
+                        logger.error("동적 알파 계산 실패 (%s): %s", factor, exc)
+                        missing_factor_errors[factor] = str(exc)
+                if compute_frames:
+                    computed_all = compute_frames[0]
+                    for extra in compute_frames[1:]:
+                        computed_all = pd.merge(computed_all, extra, how='outer', on=['Date', 'Ticker'])
+                    if 'Date' in df.columns:
+                        window_df = pd.merge(window_df, computed_all, how='left', on=['Date', 'Ticker'])
+                    else:
+                        window_df = computed_all
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("동적 알파 계산 중 오류: %s", exc)
+                for factor in missing_factors:
+                    missing_factor_errors.setdefault(factor, '동적 계산 중 오류가 발생했습니다.')
+
+        window_df = window_df.dropna(subset=['Ticker'])
+
+        if window_df.empty:
+            return jsonify({'error': '선택한 기간에 유효한 데이터가 없습니다'}), 400
+
+        available_factors = [factor for factor in selected_factors if factor in window_df.columns]
+        resolved_missing = [factor for factor in selected_factors if factor not in available_factors]
+        for factor in resolved_missing:
+            missing_factor_errors.setdefault(factor, '데이터를 찾을 수 없습니다.')
+
+        if not available_factors:
+            return jsonify({
+                'error': '선택된 알파에 대한 데이터를 계산할 수 없습니다.',
+                'missing_factors': resolved_missing,
+            }), 400
+
+        base_columns = ['Ticker']
+        if 'Close' in window_df.columns:
+            base_columns.append('Close')
+
+        working = window_df[base_columns + available_factors + (['Date'] if 'Date' in window_df.columns else [])].copy()
+        factor_only = working[available_factors]
+        working = working.loc[~factor_only.isna().all(axis=1)].copy()
+
+        total_universe = len(working['Ticker'].unique())
+        if total_universe == 0:
+            return jsonify({'error': '선택된 알파에 대해 유효한 데이터가 없습니다'}), 400
+
         if top_count is not None:
-            # 개수로 선별하는 경우
-            top_n = min(max(1, int(top_count)), total_stocks)  # 최소 1개, 최대 전체 종목 수
             selection_method = 'count'
-            selection_criteria = f'상위 {top_n}개 종목'
-        else:
-            # 퍼센트로 선별하는 경우 (기존 방식)
-            percentage = top_percentage if top_percentage is not None else 10
-            top_n = max(1, int(total_stocks * percentage / 100))
+        elif top_percentage is not None:
             selection_method = 'percentage'
+        elif selection_method == 'count':
+            top_count = top_count if top_count is not None else 10
+        elif selection_method == 'percentage':
+            top_percentage = top_percentage if top_percentage is not None else 10
+        else:
+            selection_method = 'percentage'
+            top_percentage = 10
+
+        if selection_method == 'count':
+            try:
+                top_count = int(top_count if top_count is not None else 10)
+            except (TypeError, ValueError):
+                top_count = 10
+            top_count = max(1, min(top_count, total_universe))
+            top_n = top_count
+            selection_criteria = f'상위 {top_count}개 종목'
+        else:
+            try:
+                percentage = float(top_percentage if top_percentage is not None else 10.0)
+            except (TypeError, ValueError):
+                percentage = 10.0
+            percentage = max(0.1, min(percentage, 100.0))
+            top_n = max(1, int(round(total_universe * (percentage / 100.0))))
             selection_criteria = f'상위 {percentage}% ({top_n}개 종목)'
-        
-        # 상위 종목 선별
-        top_stocks = df_sorted.head(top_n)
-        
-        # 결과 포맷팅
-        stock_list = []
-        for _, row in top_stocks.iterrows():
-            stock_info = {
+            top_percentage = percentage
+
+        rank_columns: List[str] = []
+        if 'Date' in working.columns:
+            for factor in available_factors:
+                rank_column = f'{factor}__rank'
+                working[rank_column] = working.groupby('Date')[factor].rank(method='average', ascending=False, pct=True)
+                rank_columns.append(rank_column)
+        else:
+            for factor in available_factors:
+                rank_column = f'{factor}__rank'
+                working[rank_column] = working[factor].rank(method='average', ascending=False, pct=True)
+                rank_columns.append(rank_column)
+
+        grouped = working.groupby('Ticker')
+        summary = pd.DataFrame(index=sorted(working['Ticker'].unique()))
+        summary.index.name = 'Ticker'
+
+        if 'Close' in working.columns:
+            summary['Close'] = grouped['Close'].last()
+
+        for factor in available_factors:
+            rank_column = f'{factor}__rank'
+            summary[factor] = grouped[factor].mean()
+            summary[rank_column] = grouped[rank_column].mean()
+
+        rank_cols = [f'{factor}__rank' for factor in available_factors]
+        summary = summary.dropna(subset=rank_cols, how='all')
+
+        if summary.empty:
+            return jsonify({'error': '선택된 알파에 대해 합성 점수를 계산할 수 없습니다'}), 400
+
+        raw_weight_values: List[float] = []
+        for factor in available_factors:
+            raw_value = alpha_weights.get(factor)
+            if raw_value is None:
+                raw_value = alpha_weights.get(factor.lower())
+            try:
+                raw_weight_values.append(float(raw_value))
+            except (TypeError, ValueError):
+                raw_weight_values.append(1.0)
+
+        weight_array = np.array(raw_weight_values, dtype=float)
+        if not np.isfinite(weight_array).any() or np.all(weight_array == 0):
+            weight_array = np.ones_like(weight_array)
+
+        max_weight = np.max(weight_array)
+        exps = np.exp(weight_array - max_weight)
+        softmax_den = np.sum(exps)
+        if softmax_den == 0 or not np.isfinite(softmax_den):
+            softmax_weights = np.ones_like(weight_array) / len(weight_array)
+        else:
+            softmax_weights = exps / softmax_den
+
+        scores: List[float] = []
+        rank_matrix = summary[rank_cols].to_numpy()
+        for row in rank_matrix:
+            mask = np.isfinite(row)
+            if not mask.any():
+                scores.append(float('nan'))
+                continue
+            weights_masked = softmax_weights[mask]
+            weights_masked = weights_masked / weights_masked.sum()
+            score = float(np.dot(row[mask], weights_masked))
+            scores.append(score)
+
+        summary['composite_score'] = scores
+        summary = summary.replace([np.inf, -np.inf], np.nan).dropna(subset=['composite_score'])
+
+        if summary.empty:
+            return jsonify({'error': '선택된 알파에 대해 합성 점수를 계산할 수 없습니다'}), 400
+
+        summary = summary.sort_values('composite_score', ascending=False)
+        top_df = summary.head(top_n).reset_index()
+
+        def safe_number(value: Any) -> Optional[float]:
+            try:
+                if pd.isna(value):
+                    return None
+            except Exception:
+                pass
+            if isinstance(value, (np.integer, np.floating)):
+                return float(value)
+            if isinstance(value, (int, float)):
+                return float(value)
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        stock_list: List[Dict[str, Any]] = []
+        for _, row in top_df.iterrows():
+            factor_breakdown: List[Dict[str, Any]] = []
+            if include_breakdown:
+                for idx, factor in enumerate(available_factors):
+                    rank_column = f'{factor}__rank'
+                    meta = factor_metadata.get(factor, {})
+                    factor_breakdown.append({
+                        'name': factor,
+                        'value': safe_number(row.get(factor)),
+                        'rank': safe_number(row.get(rank_column)),
+                        'weight': float(softmax_weights[idx]),
+                        'provider': meta.get('provider'),
+                        'description': meta.get('description'),
+                        'tags': meta.get('tags', []),
+                    })
+
+            stock_info: Dict[str, Any] = {
                 'ticker': row['Ticker'],
-                'alpha_value': float(row[alpha_factor]),
-                'rank': int(top_stocks.index.get_loc(row.name) + 1)
+                'rank': int(row.name + 1),
+                'composite_score': safe_number(row.get('composite_score')),
             }
-            
-            # 추가 정보가 있으면 포함
+
+            if include_breakdown:
+                stock_info['factors'] = factor_breakdown
+
             if 'Close' in row:
-                stock_info['price'] = float(row['Close'])
-            if 'Company' in row:
-                stock_info['company_name'] = row['Company']
-            
+                stock_info['close'] = safe_number(row.get('Close'))
+
             stock_list.append(stock_info)
-        
+
+        factor_summary: List[Dict[str, Any]] = []
+        for idx, factor in enumerate(available_factors):
+            meta = factor_metadata.get(factor, {})
+            factor_summary.append({
+                'name': factor,
+                'provider': meta.get('provider'),
+                'description': meta.get('description'),
+                'tags': meta.get('tags', []),
+                'raw_weight': float(weight_array[idx]),
+                'weight_share': float(softmax_weights[idx]),
+            })
+
+        resolved_as_of = (
+            effective_end.strftime('%Y-%m-%d')
+            if isinstance(effective_end, pd.Timestamp)
+            else as_of_date
+        )
+
         return jsonify({
             'success': True,
             'stocks': stock_list,
             'parameters': {
                 'alpha_factor': alpha_factor,
+                'alpha_factors': selected_factors,
+                'used_factors': available_factors,
                 'top_percentage': top_percentage,
                 'top_count': top_count,
                 'selection_method': selection_method,
-                'date': str(latest_date) if 'Date' in df.columns else '전체 기간',
-                'total_stocks': total_stocks,
-                'selected_stocks': len(stock_list)
+                'as_of_date': resolved_as_of,
+                'alpha_weights': {factor: float(weight_array[idx]) for idx, factor in enumerate(available_factors)},
+                'softmax_weights': {factor: float(softmax_weights[idx]) for idx, factor in enumerate(available_factors)},
+                'include_breakdown': include_breakdown,
+                'start_date': effective_start.strftime('%Y-%m-%d') if isinstance(effective_start, pd.Timestamp) else None,
+                'end_date': effective_end.strftime('%Y-%m-%d') if isinstance(effective_end, pd.Timestamp) else None,
+                'total_stocks': total_universe,
+                'selected_stocks': len(stock_list),
             },
             'summary': {
-                'best_alpha_value': float(stock_list[0]['alpha_value']) if stock_list else None,
-                'worst_alpha_value': float(stock_list[-1]['alpha_value']) if stock_list else None,
-                'selection_criteria': selection_criteria
-            }
+                'selection_criteria': selection_criteria,
+                'requested_factor_count': len(selected_factors),
+                'used_factor_count': len(available_factors),
+                'missing_factors': missing_factors,
+                'best_score': safe_number(top_df['composite_score'].iloc[0]) if len(top_df) else None,
+                'worst_score': safe_number(top_df['composite_score'].iloc[-1]) if len(top_df) else None,
+            },
+            'factors': factor_summary,
+            'missing_factors': list(missing_factor_errors.keys()),
+            'missing_factor_errors': missing_factor_errors,
         })
-        
+
     except Exception as e:
         logger.error(f"포트폴리오 종목 선별 오류: {str(e)}")
         return jsonify({'error': str(e)}), 500

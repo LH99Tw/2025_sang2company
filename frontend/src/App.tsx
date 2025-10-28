@@ -16,6 +16,7 @@ import { AlphaIncubator } from './pages/AlphaIncubator';
 import { About } from './pages/About';
 import MyInvestment from './pages/MyInvestment';
 import Profile from './pages/Profile';
+import { HeatmapDemo } from './pages/HeatmapDemo';
 
 import './App.css';
 
@@ -53,6 +54,7 @@ const AppContent: React.FC = () => {
           <Route path="/alpha-incubator" element={<AlphaIncubator />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/about" element={<About />} />
+          <Route path="/heatmap-demo" element={<HeatmapDemo />} />
         </Routes>
       </Layout>
     </Router>
@@ -80,4 +82,3 @@ const App: React.FC = () => {
 };
 
 export default App;
-

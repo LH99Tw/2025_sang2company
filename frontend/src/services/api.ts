@@ -7,6 +7,9 @@ import type {
   ChatMessage,
   IncubatorChatResponse,
   IncubatorMessage,
+  AlphaPortfolioResponse,
+  AlphaFactorMetadata,
+  MarketHeatmapResponse,
 } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5002';
@@ -37,13 +40,22 @@ export const getBacktestStatus = async (taskId: string): Promise<BacktestStatus>
   return response.data;
 };
 
+export interface AlphaPortfolioParams {
+  alpha_factor?: string;
+  alpha_factors?: string[];
+  alpha_weights?: Record<string, number>;
+  top_percentage?: number;
+  top_count?: number;
+  selection_method?: 'percentage' | 'count';
+  as_of_date?: string;
+  start_date?: string;
+  end_date?: string;
+  include_breakdown?: boolean;
+}
+
 // 💼 포트폴리오 API
-export const selectStocks = async (params: {
-  alpha_factor: string;
-  top_count: number;
-  selection_method: string;
-}) => {
-  const response = await api.post('/api/portfolio/stocks', params);
+export const selectStocks = async (params: AlphaPortfolioParams): Promise<AlphaPortfolioResponse> => {
+  const response = await api.post('/api/portfolio/stocks', params, { withCredentials: true });
   return response.data;
 };
 
@@ -160,9 +172,17 @@ export const deleteUserAlpha = async (alphaId: string) => {
   return response.data;
 };
 
+export interface FactorsListResponse {
+  success: boolean;
+  factors: string[];
+  total_count: number;
+  metadata: AlphaFactorMetadata[];
+  groups?: Array<{ id: string; label: string; count?: number }>;
+}
+
 // 📊 데이터 API
-export const getFactorsList = async () => {
-  const response = await api.get('/api/data/factors');
+export const getFactorsList = async (): Promise<FactorsListResponse> => {
+  const response = await api.get('/api/data/factors', { withCredentials: true });
   return response.data;
 };
 
@@ -182,6 +202,11 @@ export const getTickerPerformance = async (params: {
   end_date?: string;
 }) => {
   const response = await api.post('/api/data/ticker-performance', params);
+  return response.data;
+};
+
+export const getMarketHeatmap = async (): Promise<MarketHeatmapResponse> => {
+  const response = await api.get('/api/market/heatmap');
   return response.data;
 };
 

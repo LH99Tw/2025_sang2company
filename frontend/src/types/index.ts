@@ -4,6 +4,21 @@ export interface AlphaFactor {
   name: string;
   description?: string;
   formula?: string;
+  provider?: string;
+  group_id?: string;
+  group_label?: string;
+}
+
+export interface AlphaFactorMetadata {
+  id: string;
+  name: string;
+  description?: string;
+  provider?: string;
+  group_id?: string;
+  group_label?: string;
+  tags?: string[];
+  expression?: string;
+  owner?: string | null;
 }
 
 // 📈 백테스트 파라미터
@@ -99,6 +114,107 @@ export interface PortfolioStockLegacy {
   weight: number;
   alpha_value: number;
   expected_return?: number;
+}
+
+export interface AlphaPortfolioFactorBreakdown {
+  name: string;
+  value: number | null;
+  rank?: number | null;
+  provider?: string;
+  description?: string;
+  tags?: string[];
+  weight?: number;
+}
+
+export interface AlphaPortfolioStockResult {
+  ticker: string;
+  rank: number;
+  composite_score: number | null;
+  close?: number | null;
+  factors?: AlphaPortfolioFactorBreakdown[];
+}
+
+export interface AlphaPortfolioFactorSummary {
+  name: string;
+  provider?: string;
+  description?: string;
+  tags?: string[];
+  raw_weight: number;
+  weight_share: number;
+}
+
+export interface AlphaPortfolioResponse {
+  success: boolean;
+  stocks: AlphaPortfolioStockResult[];
+  factors: AlphaPortfolioFactorSummary[];
+  missing_factors?: string[];
+  parameters: {
+    alpha_factor?: string | null;
+    alpha_factors?: string[];
+    used_factors?: string[];
+    top_percentage?: number | null;
+    top_count?: number | null;
+    selection_method?: string;
+    alpha_weights?: Record<string, number>;
+    softmax_weights?: Record<string, number>;
+    include_breakdown?: boolean;
+    as_of_date?: string | null;
+    start_date?: string | null;
+    end_date?: string | null;
+    total_stocks?: number;
+    selected_stocks?: number;
+  };
+  summary: {
+    selection_criteria?: string;
+    requested_factor_count?: number;
+    used_factor_count?: number;
+    missing_factors?: string[];
+    best_score?: number | null;
+    worst_score?: number | null;
+  };
+  missing_factor_errors?: Record<string, string>;
+}
+
+export interface HeatmapTickerNode {
+  name: string;
+  label: string;
+  value: number;
+  change_pct?: number;
+  change_value?: number;
+  close?: number;
+  market_cap?: number;
+  sector?: string;
+  industry?: string;
+  color?: string;
+  display_change?: string;
+  children?: never;
+}
+
+export interface HeatmapIndustryNode {
+  name: string;
+  value: number;
+  change_pct?: number;
+  change_value?: number;
+  display_change?: string;
+  color?: string;
+  children?: HeatmapTickerNode[];
+}
+
+export interface HeatmapSectorNode {
+  name: string;
+  value: number;
+  change_pct?: number;
+  change_value?: number;
+  display_change?: string;
+  color?: string;
+  children?: HeatmapIndustryNode[];
+}
+
+export interface MarketHeatmapResponse {
+  success: boolean;
+  date: string;
+  use_log_scale: boolean;
+  sectors: HeatmapSectorNode[];
 }
 
 // 👤 사용자 정보

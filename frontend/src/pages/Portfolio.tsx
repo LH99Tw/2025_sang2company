@@ -1,23 +1,52 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import styled from 'styled-components';
-import { Table, message, Modal } from 'antd';
 import {
+  DatePicker,
+  Empty,
+  InputNumber,
+  message,
+  Radio,
+  Select,
+  Slider,
+  Space,
+  Spin,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+} from 'antd';
+import type { ColumnsType } from 'antd/es/table';
+import dayjs, { Dayjs } from 'dayjs';
+import {
+  ThunderboltOutlined,
   FundOutlined,
-  PlusOutlined,
-  FallOutlined,
-  RiseOutlined,
-  StockOutlined,
+  BarChartOutlined,
+  FilterOutlined,
+  SlidersOutlined,
 } from '@ant-design/icons';
 import { GlassCard } from '../components/common/GlassCard';
 import { GlassButton } from '../components/common/GlassButton';
-import { GlassInput } from '../components/common/GlassInput';
 import { theme } from '../styles/theme';
-import type { PortfolioStock, InvestmentData } from '../types';
+import { getFactorsList, selectStocks, type AlphaPortfolioParams } from '../services/api';
+import type {
+  AlphaFactorMetadata,
+  AlphaPortfolioResponse,
+  AlphaPortfolioStockResult,
+} from '../types';
+import axios from 'axios';
 
-const Container = styled.div`
+const { Option } = Select;
+
+const PageContainer = styled.div`
   display: flex;
   flex-direction: column;
   gap: ${theme.spacing.xl};
+`;
+
+const Header = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.sm};
 `;
 
 const Title = styled.h1`
@@ -27,66 +56,43 @@ const Title = styled.h1`
   font-weight: 700;
 `;
 
-const PortfolioGrid = styled.div`
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: ${theme.spacing.lg};
-`;
-
-const MetricCard = styled(GlassCard)`
-  display: flex;
-  flex-direction: column;
-  gap: ${theme.spacing.md};
-`;
-
-const MetricHeader = styled.div`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-`;
-
-const MetricTitle = styled.div`
+const Subtitle = styled.span`
   color: ${theme.colors.textSecondary};
-  font-size: ${theme.typography.fontSize.caption};
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-size: ${theme.typography.fontSize.body};
 `;
 
-const MetricIcon = styled.div<{ $color: string }>`
-  color: ${(props: { $color: string }) => props.$color};
-  font-size: 24px;
-`;
-
-const MetricValue = styled.div`
-  font-size: ${theme.typography.fontSize.h2};
-  font-weight: 700;
-  color: ${theme.colors.textPrimary};
-  font-family: ${theme.typography.fontFamily.display};
-`;
-
-const MetricChange = styled.div<{ $positive: boolean }>`
+const Layout = styled.div`
   display: flex;
-  align-items: center;
-  gap: 4px;
-  color: ${(props: { $positive: boolean }) =>
-    props.$positive ? theme.colors.success : theme.colors.error};
-  font-size: ${theme.typography.fontSize.caption};
-  font-weight: 600;
+  justify-content: center;
+  align-items: flex-start;
+  gap: ${theme.spacing.xl};
+  flex-wrap: wrap;
 `;
 
-const FormSection = styled(GlassCard)`
-  margin-bottom: ${theme.spacing.lg};
+const SettingsPanel = styled(GlassCard)`
+  flex: 0 0 420px;
   display: flex;
   flex-direction: column;
   gap: ${theme.spacing.lg};
 `;
 
-const FormGrid = styled.div`
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+const SettingsHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+`;
+
+const SettingsTitle = styled.h2`
+  margin: 0;
+  font-size: ${theme.typography.fontSize.h4};
+  color: ${theme.colors.textPrimary};
+  font-weight: 700;
+`;
+
+const SettingsBody = styled.div`
+  display: flex;
+  flex-direction: column;
   gap: ${theme.spacing.md};
-  align-items: end;
 `;
 
 const FormGroup = styled.div`
@@ -99,588 +105,572 @@ const Label = styled.label`
   color: ${theme.colors.textSecondary};
   font-size: ${theme.typography.fontSize.caption};
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 `;
 
-const TableContainer = styled(GlassCard)`
+const InlineNote = styled.span`
+  color: ${theme.colors.textSecondary};
+  font-size: ${theme.typography.fontSize.caption};
+`;
+
+const SliderContainer = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.sm};
+`;
+
+const SliderRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: ${theme.spacing.sm};
+`;
+
+const SliderLabel = styled.div`
+  flex: 0 0 120px;
+  display: flex;
+  flex-direction: column;
+  color: ${theme.colors.textPrimary};
+  font-weight: 600;
+  font-size: ${theme.typography.fontSize.body};
+`;
+
+const SliderWeight = styled.span`
+  color: ${theme.colors.textSecondary};
+  font-size: ${theme.typography.fontSize.caption};
+  font-weight: 500;
+`;
+
+const WeightSlider = styled(Slider)`
+  flex: 1;
+`;
+
+const ResultsContainer = styled.div`
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.lg};
+  min-width: 520px;
+`;
+
+const SummaryGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: ${theme.spacing.lg};
+`;
+
+const SummaryCard = styled(GlassCard)`
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.sm};
+`;
+
+const SummaryHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+`;
+
+const SummaryTitle = styled.span`
+  color: ${theme.colors.textSecondary};
+  font-size: ${theme.typography.fontSize.caption};
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+`;
+
+const SummaryValue = styled.span`
+  font-size: ${theme.typography.fontSize.h3};
+  font-weight: 700;
+  color: ${theme.colors.textPrimary};
+  font-family: ${theme.typography.fontFamily.display};
+`;
+
+const SummarySubtitle = styled.span`
+  color: ${theme.colors.textSecondary};
+  font-size: ${theme.typography.fontSize.body};
+`;
+
+const ResultsCard = styled(GlassCard)`
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.lg};
+
   .ant-table {
     background: transparent !important;
   }
-  
+
   .ant-table-thead > tr > th {
     background: ${theme.colors.liquidGlass} !important;
     border-bottom: 1px solid ${theme.colors.border} !important;
     color: ${theme.colors.textSecondary} !important;
     font-weight: 600;
   }
-  
+
   .ant-table-tbody > tr > td {
     background: transparent !important;
     border-bottom: 1px solid ${theme.colors.liquidGlassBorder} !important;
     color: ${theme.colors.textPrimary} !important;
   }
-  
+
   .ant-table-tbody > tr:hover > td {
     background: ${theme.colors.liquidGlassHover} !important;
   }
 `;
 
-const DangerButton = styled.button`
-  background: ${theme.colors.liquidGlass};
-  border: 1px solid ${theme.colors.error};
-  color: ${theme.colors.error};
-  border-radius: 10px;
-  padding: 8px 16px;
-  font-weight: 600;
-  font-size: 14px;
-  cursor: pointer;
-  backdrop-filter: blur(10px);
-  transition: all ${theme.transitions.normal};
+const ActionsRow = styled.div`
   display: flex;
-  align-items: center;
-  gap: 6px;
-
-  &:hover:not(:disabled) {
-    background: rgba(239, 68, 68, 0.08);
-    border-color: ${theme.colors.error};
-    color: ${theme.colors.error};
-    transform: translateY(-1px);
-  }
-
-  &:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
+  justify-content: flex-end;
+  gap: ${theme.spacing.sm};
+  flex-wrap: wrap;
 `;
 
-const formInitialState = {
-  ticker: '',
-  companyName: '',
-  quantity: '',
-  price: '',
-  currentPrice: '',
-  sector: '',
+const NoFactors = styled.div`
+  color: ${theme.colors.textSecondary};
+  font-size: ${theme.typography.fontSize.caption};
+`;
+
+interface NormalizedWeights {
+  [factor: string]: number;
+}
+
+const computeSoftmax = (selected: string[], weights: Record<string, number>): NormalizedWeights => {
+  if (selected.length === 0) return {};
+  const rawValues = selected.map(factor => Number.isFinite(weights[factor]) ? weights[factor] : 1);
+  const maxVal = Math.max(...rawValues);
+  const exps = rawValues.map(value => Math.exp(value - maxVal));
+  const sumExps = exps.reduce((acc, value) => acc + value, 0);
+  if (!Number.isFinite(sumExps) || sumExps === 0) {
+    const equal = 1 / selected.length;
+    return selected.reduce<NormalizedWeights>((acc, factor) => {
+      acc[factor] = equal;
+      return acc;
+    }, {});
+  }
+  return selected.reduce<NormalizedWeights>((acc, factor, idx) => {
+    acc[factor] = exps[idx] / sumExps;
+    return acc;
+  }, {});
 };
 
-const normalizePortfolio = (items: any[]): PortfolioStock[] => {
-  if (!Array.isArray(items)) return [];
-  return items.map(item => ({
-    ...item,
-    quantity: Number(item.quantity) || 0,
-    avg_price: Number(item.avg_price) || 0,
-    current_price: Number(item.current_price) || 0,
-  }));
+const formatPercent = (value?: number | null) => {
+  if (value === undefined || value === null || Number.isNaN(value)) return '-';
+  return `${(value * 100).toFixed(1)}%`;
 };
 
-const normalizeInvestment = (data: any): InvestmentData | null => {
-  if (!data) return null;
-  return {
-    user_id: data.user_id,
-    total_assets: Number(data.total_assets) || 0,
-    cash: Number(data.cash) || 0,
-    stock_value: Number(data.stock_value) || 0,
-    updated_at: data.updated_at,
-  };
+const formatScore = (value?: number | null) => {
+  if (value === undefined || value === null || Number.isNaN(value)) return '-';
+  return value.toFixed(4);
 };
-
-const formatCurrency = (value: number) =>
-  `${Number(value || 0).toLocaleString('ko-KR')} 원`;
-
-const formatNumber = (value: number, fractionDigits = 2) =>
-  value.toLocaleString('ko-KR', {
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
-  });
 
 export const Portfolio: React.FC = () => {
-  const [portfolio, setPortfolio] = useState<PortfolioStock[]>([]);
-  const [investmentData, setInvestmentData] = useState<InvestmentData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const [sellModalVisible, setSellModalVisible] = useState(false);
-  const [sellLoading, setSellLoading] = useState(false);
-  const [selectedStock, setSelectedStock] = useState<PortfolioStock | null>(null);
-  const [sellQuantity, setSellQuantity] = useState<number>(0);
-  const [sellPrice, setSellPrice] = useState<number>(0);
-  const [formState, setFormState] = useState(formInitialState);
-
-  const loadPortfolioData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [portfolioRes, investmentRes] = await Promise.all([
-        fetch('/api/csv/user/portfolio', { credentials: 'include' }),
-        fetch('/api/csv/user/investment', { credentials: 'include' }),
-      ]);
-
-      if (portfolioRes.ok) {
-        const portfolioJson = await portfolioRes.json();
-        setPortfolio(normalizePortfolio(portfolioJson.portfolio || []));
-      }
-
-      if (investmentRes.ok) {
-        const investmentJson = await investmentRes.json();
-        const normalized = normalizeInvestment(investmentJson.investment_data);
-        if (normalized) {
-          setInvestmentData(normalized);
-        }
-      }
-    } catch (error) {
-      console.error('포트폴리오 데이터 로드 실패:', error);
-      message.error('포트폴리오 정보를 불러오지 못했습니다.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [factorsLoading, setFactorsLoading] = useState(false);
+  const [generateLoading, setGenerateLoading] = useState(false);
+  const [factorList, setFactorList] = useState<AlphaFactorMetadata[]>([]);
+  const [selectedFactors, setSelectedFactors] = useState<string[]>([]);
+  const [factorWeights, setFactorWeights] = useState<Record<string, number>>({});
+  const [asOfDate, setAsOfDate] = useState<Dayjs | null>(dayjs());
+  const [selectionMode, setSelectionMode] = useState<'count' | 'percentage'>('count');
+  const [topCount, setTopCount] = useState<number>(10);
+  const [topPercentage, setTopPercentage] = useState<number>(10);
+  const [includeBreakdown, setIncludeBreakdown] = useState<boolean>(true);
+  const [result, setResult] = useState<AlphaPortfolioResponse | null>(null);
 
   useEffect(() => {
-    loadPortfolioData();
-  }, [loadPortfolioData]);
+    const loadFactors = async () => {
+      setFactorsLoading(true);
+      try {
+        const data = await getFactorsList();
+        const metadata = Array.isArray(data.metadata) ? data.metadata : [];
+        metadata.sort((a, b) => a.name.localeCompare(b.name));
+        setFactorList(metadata);
+      } catch (error) {
+        console.error('알파 목록 로드 실패:', error);
+        message.error('알파 목록을 불러오지 못했습니다.');
+      } finally {
+        setFactorsLoading(false);
+      }
+    };
 
-  const totalCost = useMemo(
-    () =>
-      portfolio.reduce(
-        (sum, item) => sum + (Number(item.avg_price) || 0) * (Number(item.quantity) || 0),
-        0
-      ),
-    [portfolio]
+    loadFactors();
+  }, []);
+
+  const normalizedWeights = useMemo(
+    () => computeSoftmax(selectedFactors, factorWeights),
+    [selectedFactors, factorWeights],
   );
 
-  const portfolioValue = useMemo(
+  const factorOptions = useMemo(
     () =>
-      portfolio.reduce(
-        (sum, item) =>
-          sum + (Number(item.current_price) || 0) * (Number(item.quantity) || 0),
-        0
-      ),
-    [portfolio]
+      factorList.map(meta => ({
+        value: meta.name,
+        label: meta.name,
+      })),
+    [factorList],
   );
 
-  const unrealizedProfit = portfolioValue - totalCost;
-  const unrealizedPercent = totalCost > 0 ? (unrealizedProfit / totalCost) * 100 : 0;
-
-  const handleFormChange = (field: keyof typeof formInitialState) => (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const value = e.target.value;
-    setFormState(prev => ({ ...prev, [field]: value }));
-  };
-
-  const handleAddStock = async () => {
-    if (adding) return;
-
-    const ticker = formState.ticker.trim().toUpperCase();
-    const quantity = Number(formState.quantity);
-    const price = Number(formState.price);
-    const currentPrice = formState.currentPrice
-      ? Number(formState.currentPrice)
-      : price;
-
-    if (!ticker || Number.isNaN(quantity) || Number.isNaN(price) || quantity <= 0 || price <= 0) {
-      message.error('유효한 종목 코드, 수량, 가격을 입력해주세요.');
-      return;
-    }
-
-    if (!investmentData) {
-      message.error('투자 데이터가 로드되지 않았습니다. 잠시 후 다시 시도해주세요.');
-      return;
-    }
-
-    const tradeAmount = quantity * price;
-    if (investmentData.cash < tradeAmount) {
-      message.error('보유 현금이 부족합니다.');
-      return;
-    }
-
-    setAdding(true);
-    try {
-      const response = await fetch('/api/csv/user/portfolio/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          ticker,
-          company_name: formState.companyName || ticker,
-          quantity,
-          price,
-          current_price: currentPrice,
-          sector: formState.sector,
-          note: '포트폴리오 페이지에서 수동 추가',
-        }),
+  const handleFactorsChange = (values: string[]) => {
+    setSelectedFactors(values);
+    setFactorWeights(prev => {
+      const next: Record<string, number> = {};
+      values.forEach(value => {
+        next[value] = Number.isFinite(prev[value]) ? prev[value] : 1;
       });
-
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error(result.error || '포트폴리오 추가에 실패했습니다.');
-      }
-
-      setPortfolio(normalizePortfolio(result.portfolio || []));
-      const normalizedInvestment = normalizeInvestment(result.investment);
-      if (normalizedInvestment) {
-        setInvestmentData(normalizedInvestment);
-      }
-
-      setFormState(formInitialState);
-      message.success(result.message || '종목이 추가되었습니다.');
-    } catch (error) {
-      console.error('포트폴리오 추가 실패:', error);
-      message.error(error instanceof Error ? error.message : '포트폴리오 추가에 실패했습니다.');
-    } finally {
-      setAdding(false);
-    }
+      return next;
+    });
   };
 
-  const openSellModal = (stock: PortfolioStock) => {
-    setSelectedStock(stock);
-    setSellQuantity(Number(stock.quantity) || 0);
-    setSellPrice(Number(stock.current_price) || 0);
-    setSellModalVisible(true);
+  const handleWeightChange = (factor: string, value: number) => {
+    setFactorWeights(prev => ({
+      ...prev,
+      [factor]: value,
+    }));
   };
 
-  const handleSell = async () => {
-    if (!selectedStock || sellLoading) return;
+  const columns: ColumnsType<AlphaPortfolioStockResult> = useMemo(
+    () => [
+      {
+        title: '순위',
+        dataIndex: 'rank',
+        key: 'rank',
+        width: 80,
+        align: 'center',
+      },
+      {
+        title: '종목',
+        dataIndex: 'ticker',
+        key: 'ticker',
+        render: (ticker: string) => (
+          <span style={{ fontWeight: 600, color: theme.colors.textPrimary }}>{ticker}</span>
+        ),
+      },
+      {
+        title: 'Composite Score',
+        dataIndex: 'composite_score',
+        key: 'composite_score',
+        align: 'right',
+        render: (value: number | null) => (
+          <span style={{ fontFamily: theme.typography.fontFamily.display }}>
+            {formatScore(value)}
+          </span>
+        ),
+      },
+      {
+        title: '종가',
+        dataIndex: 'close',
+        key: 'close',
+        align: 'right',
+        render: (value: number | null | undefined) =>
+          value !== undefined && value !== null ? value.toFixed(2) : '-',
+      },
+      {
+        title: '알파 기여도',
+        key: 'factors',
+        render: (_: unknown, record: AlphaPortfolioStockResult) => {
+          if (!record.factors || record.factors.length === 0) {
+            return <InlineNote>상세 정보 미포함</InlineNote>;
+          }
 
-    if (sellQuantity <= 0) {
-      message.error('매도 수량을 입력해주세요.');
+          return (
+            <Space wrap size={6}>
+              {record.factors.map(factor => (
+                <Tooltip
+                  key={`${record.ticker}-${factor.name}`}
+                  title={
+                    <div>
+                      <div>{factor.description || '설명 없음'}</div>
+                      <div>Percentile: {formatPercent(factor.rank)}</div>
+                      <div>Value: {factor.value !== null ? factor.value.toFixed(4) : '-'}</div>
+                      <div>Weight: {formatPercent(factor.weight ?? normalizedWeights[factor.name] ?? 0)}</div>
+                    </div>
+                  }
+                >
+                  <Tag color="gold" style={{ marginBottom: 4 }}>
+                    {factor.name}
+                    <span style={{ marginLeft: 6, fontWeight: 600 }}>
+                      {formatPercent(factor.weight ?? normalizedWeights[factor.name] ?? 0)}
+                    </span>
+                  </Tag>
+                </Tooltip>
+              ))}
+            </Space>
+          );
+        },
+      },
+    ],
+    [normalizedWeights],
+  );
+
+  const handleGenerate = async () => {
+    if (selectedFactors.length === 0) {
+      message.warning('알파를 최소 한 개 이상 선택해주세요.');
       return;
     }
 
-    if (sellQuantity > selectedStock.quantity) {
-      message.error('보유 수량을 초과할 수 없습니다.');
+    const nonZero = selectedFactors.some(factor => (factorWeights[factor] ?? 0) !== 0);
+    if (!nonZero) {
+      message.warning('모든 알파 가중치가 0입니다. 슬라이더를 조정해주세요.');
       return;
     }
 
-    if (sellPrice <= 0) {
-      message.error('매도 가격을 입력해주세요.');
-      return;
+    const payload: AlphaPortfolioParams = {
+      alpha_factors: selectedFactors,
+      alpha_weights: selectedFactors.reduce<Record<string, number>>((acc, factor) => {
+        acc[factor] = Number.isFinite(factorWeights[factor]) ? factorWeights[factor] : 1;
+        return acc;
+      }, {}),
+      selection_method: selectionMode,
+      include_breakdown: includeBreakdown,
+    };
+
+    if (selectionMode === 'count') {
+      payload.top_count = topCount;
+    } else {
+      payload.top_percentage = topPercentage;
     }
 
-    setSellLoading(true);
+    if (asOfDate) {
+      payload.as_of_date = asOfDate.format('YYYY-MM-DD');
+    }
+
+    setGenerateLoading(true);
     try {
-      const response = await fetch('/api/csv/user/portfolio/sell', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          ticker: selectedStock.ticker,
-          quantity: sellQuantity,
-          price: sellPrice,
-          note: '포트폴리오 페이지에서 수동 매도',
-        }),
-      });
-
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error(result.error || '매도 처리에 실패했습니다.');
+      const response = await selectStocks(payload);
+      setResult(response);
+      if (response.missing_factors && response.missing_factors.length) {
+        message.warning(`일부 알파는 데이터에 없어 제외되었습니다: ${response.missing_factors.join(', ')}`);
+      } else {
+        message.success('알파 포트폴리오가 생성되었습니다.');
       }
-
-      const updatedPortfolio = normalizePortfolio(result.portfolio || []);
-      setPortfolio(updatedPortfolio);
-      const normalizedInvestment = normalizeInvestment(result.investment);
-      if (normalizedInvestment) {
-        setInvestmentData(normalizedInvestment);
-      }
-
-      const remaining = updatedPortfolio.find(item => item.ticker === selectedStock.ticker)?.quantity || 0;
-      const successMessage = result.message || (remaining > 0
-        ? `매도가 완료되었습니다. 남은 수량: ${formatNumber(remaining, 0)}주`
-        : '매도가 완료되었습니다. 보유 목록에서 제거되었습니다.');
-
-      message.success(successMessage);
-      setSellModalVisible(false);
-      setSelectedStock(null);
     } catch (error) {
-      console.error('포트폴리오 매도 실패:', error);
-      message.error(error instanceof Error ? error.message : '매도 처리에 실패했습니다.');
+      console.error('알파 포트폴리오 생성 실패:', error);
+      if (axios.isAxiosError(error) && error.response?.data?.error) {
+        message.error(error.response.data.error);
+      } else {
+        message.error('포트폴리오 생성을 실패했습니다. 설정을 확인해주세요.');
+      }
     } finally {
-      setSellLoading(false);
+      setGenerateLoading(false);
     }
   };
-
-  const columns = [
-    {
-      title: '종목',
-      dataIndex: 'ticker',
-      key: 'ticker',
-      render: (_: string, record: PortfolioStock) => (
-        <div>
-          <div style={{ fontWeight: 600, color: theme.colors.textPrimary }}>
-            {record.company_name || record.ticker}
-          </div>
-          <div style={{ fontSize: '0.8rem', color: theme.colors.textSecondary }}>
-            {record.ticker}
-          </div>
-        </div>
-      ),
-    },
-    {
-      title: '보유 수량',
-      dataIndex: 'quantity',
-      key: 'quantity',
-      align: 'right' as const,
-      render: (quantity: number) => `${formatNumber(quantity, 0)}주`,
-    },
-    {
-      title: '평균 매수가',
-      dataIndex: 'avg_price',
-      key: 'avg_price',
-      align: 'right' as const,
-      render: (price: number) => formatCurrency(price),
-    },
-    {
-      title: '현재가',
-      dataIndex: 'current_price',
-      key: 'current_price',
-      align: 'right' as const,
-      render: (price: number) => formatCurrency(price),
-    },
-    {
-      title: '평가 금액',
-      key: 'valuation',
-      align: 'right' as const,
-      render: (_: any, record: PortfolioStock) =>
-        formatCurrency((Number(record.current_price) || 0) * (Number(record.quantity) || 0)),
-    },
-    {
-      title: '평가 손익',
-      key: 'profit',
-      align: 'right' as const,
-      render: (_: any, record: PortfolioStock) => {
-        const qty = Number(record.quantity) || 0;
-        const profit = (Number(record.current_price) - Number(record.avg_price)) * qty;
-        const color = profit >= 0 ? theme.colors.success : theme.colors.error;
-        return (
-          <span style={{ color, fontWeight: 600 }}>
-            {profit >= 0 ? '+' : ''}
-            {formatCurrency(profit)}
-          </span>
-        );
-      },
-    },
-    {
-      title: '수익률',
-      key: 'return',
-      align: 'right' as const,
-      render: (_: any, record: PortfolioStock) => {
-        const profitPercent =
-          Number(record.avg_price) > 0
-            ? ((Number(record.current_price) - Number(record.avg_price)) / Number(record.avg_price)) * 100
-            : 0;
-        const color = profitPercent >= 0 ? theme.colors.success : theme.colors.error;
-        return (
-          <span style={{ color, fontWeight: 600 }}>
-            {profitPercent >= 0 ? '+' : ''}
-            {formatNumber(profitPercent)}%
-          </span>
-        );
-      },
-    },
-    {
-      title: '섹터',
-      dataIndex: 'sector',
-      key: 'sector',
-      align: 'center' as const,
-      render: (sector?: string) => sector || '기타',
-    },
-    {
-      title: '액션',
-      key: 'action',
-      align: 'right' as const,
-      render: (_: any, record: PortfolioStock) => (
-        <DangerButton onClick={() => openSellModal(record)}>
-          <FallOutlined />
-          매도
-        </DangerButton>
-      ),
-    },
-  ];
 
   return (
-    <Container>
-      <Title>포트폴리오 관리</Title>
+    <PageContainer>
+      <Header>
+        <Title>알파 포트폴리오</Title>
+        <Subtitle>좌측에서 알파와 가중치를 설정하고, 우측에서 결과를 확인하세요.</Subtitle>
+      </Header>
 
-      <PortfolioGrid>
-        <MetricCard>
-          <MetricHeader>
-            <MetricTitle>총 평가금액</MetricTitle>
-            <MetricIcon $color={theme.colors.accentGold}>
-              <FundOutlined />
-            </MetricIcon>
-          </MetricHeader>
-          <MetricValue>{formatCurrency(portfolioValue)}</MetricValue>
-          <MetricChange $positive={unrealizedProfit >= 0}>
-            {unrealizedProfit >= 0 ? <RiseOutlined /> : <FallOutlined />}
-            {unrealizedProfit >= 0 ? '+' : ''}
-            {formatCurrency(unrealizedProfit)}
-            ({unrealizedProfit >= 0 ? '+' : ''}
-            {formatNumber(unrealizedPercent)}%)
-          </MetricChange>
-        </MetricCard>
+      <Layout>
+        <SettingsPanel>
+          <SettingsHeader>
+            <SettingsTitle>
+              <SlidersOutlined style={{ marginRight: 8 }} />
+              설정
+            </SettingsTitle>
+            <InlineNote>Softmax로 가중치를 정규화합니다.</InlineNote>
+          </SettingsHeader>
 
-        <MetricCard>
-          <MetricHeader>
-            <MetricTitle>보유 현금</MetricTitle>
-            <MetricIcon $color={theme.colors.info}>
-              <StockOutlined />
-            </MetricIcon>
-          </MetricHeader>
-          <MetricValue>
-            {formatCurrency(investmentData?.cash ?? 0)}
-          </MetricValue>
-          <MetricChange $positive={(investmentData?.cash ?? 0) >= 0}>
-            {(investmentData?.cash ?? 0) >= 0 ? '+' : ''}
-            {formatCurrency(investmentData?.cash ?? 0)}
-          </MetricChange>
-        </MetricCard>
+          <SettingsBody>
+            <FormGroup>
+              <Label>
+                <FilterOutlined />
+                알파 선택
+              </Label>
+              <Select
+                mode="multiple"
+                allowClear
+                showSearch
+                placeholder="알파를 선택하세요"
+                onChange={handleFactorsChange}
+                value={selectedFactors}
+                loading={factorsLoading}
+                optionFilterProp="value"
+              >
+                {factorOptions.map(option => (
+                  <Option key={option.value} value={option.value}>
+                    {option.label}
+                  </Option>
+                ))}
+              </Select>
+              {selectedFactors.length === 0 && <NoFactors>선택된 알파가 없습니다.</NoFactors>}
+            </FormGroup>
 
-        <MetricCard>
-          <MetricHeader>
-            <MetricTitle>총 자산</MetricTitle>
-            <MetricIcon $color={theme.colors.accentPrimary}>
-              <FundOutlined />
-            </MetricIcon>
-          </MetricHeader>
-          <MetricValue>
-            {formatCurrency(investmentData?.total_assets ?? portfolioValue)}
-          </MetricValue>
-          <MetricChange $positive>
-            평가 + 현금 기준
-          </MetricChange>
-        </MetricCard>
-      </PortfolioGrid>
+          <FormGroup>
+            <Label>평가 시점</Label>
+            <DatePicker
+              style={{ width: '100%' }}
+              value={asOfDate}
+              onChange={value => setAsOfDate(value)}
+              allowClear
+            />
+            <InlineNote>지정한 날짜 기준으로 알파를 계산합니다. 비워두면 최신 데이터가 사용됩니다.</InlineNote>
+          </FormGroup>
 
-      <FormSection>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: theme.spacing.sm }}>
-          <h3 style={{ color: theme.colors.textPrimary, margin: 0 }}>종목 추가</h3>
-          <p style={{ color: theme.colors.textSecondary, margin: 0 }}>
-            새로 편입할 종목의 기본 정보를 입력하면 즉시 포트폴리오와 투자 요약이 갱신됩니다.
-          </p>
-        </div>
+            <FormGroup>
+              <Label>선별 기준</Label>
+              <Radio.Group
+                value={selectionMode}
+                onChange={event => setSelectionMode(event.target.value)}
+              >
+                <Space direction="vertical">
+                  <Radio value="percentage">상위 퍼센트</Radio>
+                  <Radio value="count">상위 개수</Radio>
+                </Space>
+              </Radio.Group>
+            </FormGroup>
 
-        <FormGrid>
-          <FormGroup>
-            <Label>종목 코드</Label>
-            <GlassInput
-              value={formState.ticker}
-              onChange={handleFormChange('ticker')}
-              placeholder="예: AAPL"
-            />
-          </FormGroup>
-          <FormGroup>
-            <Label>회사명</Label>
-            <GlassInput
-              value={formState.companyName}
-              onChange={handleFormChange('companyName')}
-              placeholder="예: Apple Inc."
-            />
-          </FormGroup>
-          <FormGroup>
-            <Label>보유 수량</Label>
-            <GlassInput
-              type="number"
-              value={formState.quantity}
-              onChange={handleFormChange('quantity')}
-              placeholder="예: 10"
-            />
-          </FormGroup>
-          <FormGroup>
-            <Label>매수가 (원)</Label>
-            <GlassInput
-              type="number"
-              value={formState.price}
-              onChange={handleFormChange('price')}
-              placeholder="예: 15000"
-            />
-          </FormGroup>
-          <FormGroup>
-            <Label>현재가 (원)</Label>
-            <GlassInput
-              type="number"
-              value={formState.currentPrice}
-              onChange={handleFormChange('currentPrice')}
-              placeholder="미입력 시 매수가로 저장"
-            />
-          </FormGroup>
-          <FormGroup>
-            <Label>섹터</Label>
-            <GlassInput
-              value={formState.sector}
-              onChange={handleFormChange('sector')}
-              placeholder="예: 테크놀로지"
-            />
-          </FormGroup>
-          <GlassButton
-            variant="primary"
-            onClick={handleAddStock}
-            icon={<PlusOutlined />}
-            loading={adding}
-          >
-            종목 추가
-          </GlassButton>
-        </FormGrid>
-      </FormSection>
+            {selectionMode === 'percentage' ? (
+              <FormGroup>
+                <Label>상위 퍼센트 (%)</Label>
+                <InputNumber
+                  min={1}
+                  max={100}
+                  value={topPercentage}
+                  onChange={value => setTopPercentage(value ?? 1)}
+                  style={{ width: '100%' }}
+                />
+              </FormGroup>
+            ) : (
+              <FormGroup>
+                <Label>상위 종목 수</Label>
+                <InputNumber
+                  min={1}
+                  max={500}
+                  value={topCount}
+                  onChange={value => setTopCount(value ?? 1)}
+                  style={{ width: '100%' }}
+                />
+              </FormGroup>
+            )}
 
-      <TableContainer>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: theme.spacing.lg }}>
-          <h3 style={{ color: theme.colors.textPrimary, margin: 0 }}>포트폴리오 구성</h3>
-          <span style={{ color: theme.colors.textSecondary }}>
-            총 {portfolio.length}개 종목 · 평가금액 {formatCurrency(portfolioValue)}
-          </span>
-        </div>
-        <Table
-          columns={columns}
-          dataSource={portfolio}
-          rowKey="portfolio_id"
-          pagination={false}
-          loading={loading}
-          size="middle"
-        />
-      </TableContainer>
+            <FormGroup>
+              <Label>알파 가중치 조정</Label>
+              {selectedFactors.length === 0 ? (
+                <NoFactors>알파를 선택하면 가중치를 조정할 수 있습니다.</NoFactors>
+              ) : (
+                <SliderContainer>
+                  {selectedFactors.map(factor => (
+                    <SliderRow key={factor}>
+                      <SliderLabel>
+                        <span>{factor}</span>
+                        <SliderWeight>
+                          비중 {formatPercent(normalizedWeights[factor])}
+                        </SliderWeight>
+                      </SliderLabel>
+                      <WeightSlider
+                        max={10}
+                        min={0}
+                        step={0.1}
+                        value={factorWeights[factor] ?? 1}
+                        onChange={value => handleWeightChange(factor, Number(value))}
+                        tooltip={{ formatter: value => `가중치 ${value}` }}
+                      />
+                    </SliderRow>
+                  ))}
+                </SliderContainer>
+              )}
+            </FormGroup>
 
-      <Modal
-        title={selectedStock ? `${selectedStock.company_name || selectedStock.ticker} 매도` : '매도'}
-        open={sellModalVisible}
-        onCancel={() => {
-          setSellModalVisible(false);
-          setSelectedStock(null);
-        }}
-        onOk={handleSell}
-        okText="매도 확정"
-        cancelText="취소"
-        confirmLoading={sellLoading}
-        okButtonProps={{
-          style: {
-            background: theme.colors.error,
-            borderColor: theme.colors.error,
-          },
-        }}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: theme.spacing.md }}>
-          <FormGroup>
-            <Label>매도 수량</Label>
-            <GlassInput
-              type="number"
-              value={sellQuantity}
-              onChange={(e) => setSellQuantity(Number(e.target.value))}
-              placeholder="매도할 수량을 입력하세요"
-            />
-          </FormGroup>
-          <FormGroup>
-            <Label>매도 단가 (원)</Label>
-            <GlassInput
-              type="number"
-              value={sellPrice}
-              onChange={(e) => setSellPrice(Number(e.target.value))}
-              placeholder="매도 단가를 입력하세요"
-            />
-          </FormGroup>
-          {selectedStock && (
-            <p style={{ color: theme.colors.textSecondary, margin: 0, fontSize: theme.typography.fontSize.caption }}>
-              보유 수량 {formatNumber(selectedStock.quantity, 0)}주 · 평균 매수가 {formatCurrency(selectedStock.avg_price)}
-            </p>
+            <FormGroup>
+              <Label>상세 팩터 정보</Label>
+              <Switch checked={includeBreakdown} onChange={checked => setIncludeBreakdown(checked)} />
+            </FormGroup>
+          </SettingsBody>
+
+          <ActionsRow>
+            <GlassButton
+              icon={<ThunderboltOutlined />}
+              onClick={handleGenerate}
+              loading={generateLoading}
+              disabled={factorsLoading}
+            >
+              포트폴리오 생성
+            </GlassButton>
+          </ActionsRow>
+        </SettingsPanel>
+
+        <ResultsContainer>
+          {generateLoading && (
+            <GlassCard>
+              <Spin />
+            </GlassCard>
           )}
-        </div>
-      </Modal>
-    </Container>
+
+          {result ? (
+            <>
+              <SummaryGrid>
+                <SummaryCard>
+                  <SummaryHeader>
+                    <SummaryTitle>선별 종목</SummaryTitle>
+                    <ThunderboltOutlined style={{ color: theme.colors.accentPrimary, fontSize: 22 }} />
+                  </SummaryHeader>
+                  <SummaryValue>{result.parameters.selected_stocks ?? 0} 종목</SummaryValue>
+                  <SummarySubtitle>{result.summary.selection_criteria}</SummarySubtitle>
+                </SummaryCard>
+
+                <SummaryCard>
+                  <SummaryHeader>
+                    <SummaryTitle>사용된 알파</SummaryTitle>
+                    <BarChartOutlined style={{ color: theme.colors.info, fontSize: 22 }} />
+                  </SummaryHeader>
+                  <SummaryValue>{result.summary.used_factor_count ?? 0}</SummaryValue>
+              <SummarySubtitle>
+                요청 {result.summary.requested_factor_count ?? 0}개 / 누락{' '}
+                {(result.missing_factors || []).length}개
+              </SummarySubtitle>
+            </SummaryCard>
+
+            <SummaryCard>
+              <SummaryHeader>
+                <SummaryTitle>합성 점수 범위</SummaryTitle>
+                <FundOutlined style={{ color: theme.colors.accentPrimary, fontSize: 22 }} />
+                  </SummaryHeader>
+                  <SummaryValue>{formatScore(result.summary.best_score)}</SummaryValue>
+                  <SummarySubtitle>최저 {formatScore(result.summary.worst_score)}</SummarySubtitle>
+                </SummaryCard>
+              </SummaryGrid>
+
+              <ResultsCard>
+                <SettingsHeader>
+                  <SettingsTitle>선별된 종목</SettingsTitle>
+                  <InlineNote>
+                    평가 시점: {result.parameters.as_of_date ?? result.parameters.end_date ?? '최신'}
+                  </InlineNote>
+                </SettingsHeader>
+
+                {result.stocks.length > 0 ? (
+                  <Table
+                    columns={columns}
+                    dataSource={result.stocks}
+                    rowKey={record => `${record.ticker}-${record.rank}`}
+                    pagination={{ pageSize: 20 }}
+                  />
+                ) : (
+                  <Empty description="표시할 종목이 없습니다." />
+                )}
+
+                {result.missing_factor_errors && Object.keys(result.missing_factor_errors).length > 0 && (
+                  <Space wrap>
+                    {Object.entries(result.missing_factor_errors).map(([factor, reason]) => (
+                      <Tooltip key={factor} title={reason}>
+                        <Tag color="red">미포함: {factor}</Tag>
+                      </Tooltip>
+                    ))}
+                  </Space>
+                )}
+              </ResultsCard>
+            </>
+          ) : (
+            <GlassCard>
+              <Empty description="조건을 설정하고 포트폴리오를 생성하세요." />
+            </GlassCard>
+          )}
+        </ResultsContainer>
+      </Layout>
+    </PageContainer>
   );
 };

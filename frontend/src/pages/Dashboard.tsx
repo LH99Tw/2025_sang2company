@@ -3,13 +3,6 @@ import styled from 'styled-components';
 import { GlassCard } from '../components/common/GlassCard';
 import { theme } from '../styles/theme';
 import {
-  Chart as ChartJS,
-  ArcElement,
-  Tooltip as ChartTooltip,
-  Legend,
-} from 'chart.js';
-import { Doughnut } from 'react-chartjs-2';
-import {
   ResponsiveContainer,
   LineChart,
   Line,
@@ -17,6 +10,7 @@ import {
   XAxis,
   YAxis,
   Tooltip as RechartsTooltip,
+  Treemap,
 } from 'recharts';
 import type { TooltipProps } from 'recharts';
 import dayjs, { Dayjs } from 'dayjs';
@@ -24,12 +18,10 @@ import { useAuth } from '../contexts/AuthContext';
 import { Button, Input, Modal, Form, message, Popconfirm, Select, Tag, Tooltip, Pagination, DatePicker, Spin, Empty } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { GlassButton } from '../components/common/GlassButton';
-import { StoredAlpha, PortfolioStock, TickerPerformanceMetric, TickerPerformanceSeriesEntry } from '../types';
-import { fetchUserAlphas, saveUserAlphas as saveUserAlphasApi, deleteUserAlpha as deleteUserAlphaApi, getTickerPerformance, getTickerList } from '../services/api';
+import { StoredAlpha, TickerPerformanceMetric, TickerPerformanceSeriesEntry, MarketHeatmapResponse } from '../types';
+import { fetchUserAlphas, saveUserAlphas as saveUserAlphasApi, deleteUserAlpha as deleteUserAlphaApi, getTickerPerformance, getTickerList, getMarketHeatmap } from '../services/api';
 
 // Chart.js 등록
-ChartJS.register(ArcElement, ChartTooltip, Legend);
-
 const defaultAlphaSummary = {
   shared_count: 0,
   private_count: 0,
@@ -161,16 +153,6 @@ const CardsGrid = styled.div`
 `;
 
 
-const ChartsContainer = styled.div`
-  display: grid;
-  grid-template-columns: 1fr 2fr;
-  gap: ${theme.spacing.lg};
-
-  @media (max-width: 1200px) {
-    grid-template-columns: 1fr;
-  }
-`;
-
 const ChartCard = styled(GlassCard)`
   display: flex;
   flex-direction: column;
@@ -211,14 +193,6 @@ const AnalyzerColumn = styled.div`
 
 const AnalyzerAside = styled.div`
   display: contents;
-`;
-
-const DoughnutWrapper = styled.div`
-  position: relative;
-  height: 300px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 `;
 
 const AnalyzerChartCard = styled(GlassCard)`
@@ -360,58 +334,383 @@ const colorFromTicker = (ticker: string): string => {
   return `hsl(${hue}, 70%, 60%)`;
 };
 
+const clampChange = (value: number): number => {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(-0.03, Math.min(0.03, value));
+};
+
+const getHeatmapColor = (change: number): string => {
+  const clamped = clampChange(change);
+  const abs = Math.abs(clamped);
+  const ratio = Math.min(abs / 0.03, 1);
+
+  if (abs < 1e-4) {
+    return '#2f3136';
+  }
+
+  const saturation = 60 + ratio * 28;
+  const lightness = 46 - ratio * 24;
+
+  if (clamped >= 0) {
+    const hue = 135 - ratio * 10;
+    return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+  }
+
+  const hue = 355 + ratio * 5;
+  return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+};
+
+const formatChangePercent = (value: number): string => {
+  const percent = (value || 0) * 100;
+  return `${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%`;
+};
+
+type HeatmapNodeType = 'sector' | 'industry' | 'ticker';
+
+interface DecoratedHeatmapNode {
+  name: string;
+  value: number;
+  change: number;
+  displayChange: string;
+  display_change?: string;
+  color: string;
+  fill?: string;
+  type: HeatmapNodeType;
+  label?: string;
+  children?: DecoratedHeatmapNode[];
+  sector?: string;
+  industry?: string;
+  ticker?: string;
+  close?: number;
+  market_cap?: number;
+  change_pct?: number;
+  change_value?: number;
+}
+
+const decorateHeatmapTree = (nodes: any[], depth = 0, parentSector?: string): DecoratedHeatmapNode[] => {
+  if (!Array.isArray(nodes)) {
+    return [];
+  }
+
+  return nodes.map((node: any) => {
+    const children = Array.isArray(node.children) ? node.children : [];
+    const type: HeatmapNodeType = depth === 0 ? 'sector' : depth === 1 ? 'industry' : 'ticker';
+    const change = Number(node.change_pct ?? node.change ?? 0) || 0;
+    const color = typeof node.color === 'string' ? node.color : getHeatmapColor(change);
+    const display = typeof node.display_change === 'string' ? node.display_change : formatChangePercent(change);
+    const sectorName = depth === 0 ? node.name : (node.sector ?? parentSector ?? node.name);
+    const industryName = type === 'industry' ? node.name : node.industry;
+
+    const decorated: DecoratedHeatmapNode = {
+      name: node.name,
+      label: node.label ?? node.name,
+      value: Number(node.value ?? 0) || 0,
+      change,
+      change_pct: change,
+      change_value: Number(node.change_value ?? 0) || 0,
+      displayChange: display,
+      color,
+      fill: color,
+      type,
+      sector: sectorName,
+      industry: industryName,
+      ticker: node.ticker ?? node.name,
+      close: node.close !== undefined ? Number(node.close) : undefined,
+      market_cap: node.market_cap !== undefined ? Number(node.market_cap) : undefined,
+    };
+
+    if (children.length > 0) {
+      decorated.children = decorateHeatmapTree(children, depth + 1, sectorName);
+    }
+
+    return decorated;
+  });
+};
+
+const formatMarketCap = (cap?: number): string => {
+  if (!Number.isFinite(cap) || !cap || cap <= 0) {
+    return '-';
+  }
+  const units = [
+    { value: 1e12, suffix: 'T' },
+    { value: 1e9, suffix: 'B' },
+    { value: 1e6, suffix: 'M' },
+  ];
+  for (const unit of units) {
+    if (cap >= unit.value) {
+      return `${(cap / unit.value).toFixed(2)}${unit.suffix}`;
+    }
+  }
+  return `${cap.toFixed(0)}`;
+};
 
 
-const StockListHeader = styled.div`
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
+
+const HeatmapLegend = styled.div`
+  display: flex;
+  align-items: center;
   gap: ${theme.spacing.md};
-  padding: ${theme.spacing.md} ${theme.spacing.lg};
-  background: ${theme.colors.liquidGoldGradient};
-  border: 1px solid ${theme.colors.liquidGoldBorder};
-  border-radius: 8px;
-  font-weight: 600;
-  color: ${theme.colors.textPrimary};
+  flex-wrap: wrap;
+  color: ${theme.colors.textSecondary};
   font-size: ${theme.typography.fontSize.caption};
 `;
 
-const StockListItem = styled.div`
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
-  gap: ${theme.spacing.md};
-  padding: ${theme.spacing.md} ${theme.spacing.lg};
-  background: ${theme.colors.liquidGlass};
-  border: 1px solid ${theme.colors.liquidGlassBorder};
-  border-radius: 8px;
-  transition: all 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
-
-  &:hover {
-    background: ${theme.colors.liquidGlassHover};
-    border-color: ${theme.colors.borderHover};
-  }
-`;
-
-const TransactionItem = styled.div`
+const HeatmapLegendScale = styled.div`
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: ${theme.spacing.lg};
-  background: ${theme.colors.liquidGlass};
-  border: 1px solid ${theme.colors.liquidGlassBorder};
-  border-radius: 8px;
-  transition: all 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
-
-  &:hover {
-    background: ${theme.colors.liquidGlassHover};
-    border-color: ${theme.colors.borderHover};
-  }
+  gap: ${theme.spacing.xs};
 `;
+
+const HeatmapLegendItem = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 36px;
+`;
+
+const HeatmapLegendColor = styled.span`
+  display: block;
+  width: 28px;
+  height: 12px;
+  border-radius: 4px;
+  border: 1px solid ${theme.colors.liquidGlassBorder};
+`;
+
+const HeatmapHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: ${theme.spacing.sm};
+`;
+
+const HeatmapInfoText = styled.span`
+  color: ${theme.colors.textSecondary};
+  font-size: ${theme.typography.fontSize.caption};
+`;
+
+const HeatmapWrapper = styled.div`
+  width: 100%;
+  height: 680px;
+`;
+
+const HeatmapTooltipContainer = styled.div`
+  background: ${theme.colors.backgroundSecondary};
+  border: 1px solid ${theme.colors.border};
+  border-radius: 8px;
+  padding: ${theme.spacing.sm} ${theme.spacing.md};
+  box-shadow: ${theme.shadows.soft};
+  color: ${theme.colors.textPrimary};
+  max-width: 240px;
+`;
+
+const HeatmapTooltipTitle = styled.div`
+  font-weight: 600;
+  margin-bottom: ${theme.spacing.xs};
+  color: ${theme.colors.textPrimary};
+`;
+
+const HeatmapTooltipText = styled.div`
+  font-size: ${theme.typography.fontSize.caption};
+  color: ${theme.colors.textSecondary};
+`;
+const HeatmapNode: React.FC<any> = (props) => {
+  const { depth, x, y, width, height, name, payload, fill: nodeFill } = props;
+  const dataNode = (payload?.payload ?? payload ?? {}) as DecoratedHeatmapNode;
+  const rawChange = dataNode?.change_pct ?? dataNode?.change ?? dataNode?.change_value;
+  const changeValue = Number(rawChange ?? 0) || 0;
+  const fillColor = nodeFill ?? dataNode?.fill ?? dataNode?.color ?? getHeatmapColor(changeValue);
+  const displayLabel = dataNode?.label ?? dataNode?.name ?? name;
+  const displayChange = dataNode?.displayChange ?? dataNode?.display_change ?? formatChangePercent(changeValue);
+
+
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  if (depth === 1) {
+    return (
+      <g>
+        <rect
+          x={x}
+          y={y}
+          width={width}
+          height={height}
+          fill={fillColor}
+          stroke={theme.colors.border}
+          strokeWidth={1.2}
+        />
+        {width > 60 && height > 24 && (
+          <text
+            x={x + 12}
+            y={y + 22}
+            fill={theme.colors.textPrimary}
+            fontSize={16}
+            fontWeight={800}
+            style={{ paintOrder: 'stroke' }}
+            stroke='rgba(0,0,0,0.35)'
+            strokeWidth={3}
+            pointerEvents='none'
+          >
+            {displayLabel}
+          </text>
+        )}
+      </g>
+    );
+  }
+
+  if (depth === 2) {
+    const headerHeight = Math.min(28, Math.max(16, height * 0.18));
+    const headerColor = fillColor;
+    return (
+      <g>
+        <rect
+          x={x}
+          y={y}
+          width={width}
+          height={height}
+          fill={fillColor}
+          stroke={theme.colors.backgroundDark}
+          strokeWidth={0.7}
+        />
+        {width > 48 && height > headerHeight + 12 && (
+          <>
+            <rect
+              x={x}
+              y={y}
+              width={width}
+              height={headerHeight}
+              fill={`${headerColor}CC`}
+              pointerEvents="none"
+            />
+            <text
+              x={x + width / 2}
+              y={y + headerHeight / 2 + 4}
+              fill={theme.colors.textPrimary}
+              fontSize={Math.min(12, headerHeight - 8)}
+              fontWeight={700}
+              textAnchor="middle"
+              style={{ paintOrder: 'stroke' }}
+              stroke="rgba(0,0,0,0.35)"
+              strokeWidth={2}
+              pointerEvents="none"
+            >
+              {displayLabel}
+            </text>
+          </>
+        )}
+        {width > 56 && height > headerHeight + 24 && (
+          <text
+            x={x + width / 2}
+            y={y + headerHeight + 18}
+            fill={theme.colors.textSecondary}
+            fontSize={Math.min(12, headerHeight - 6)}
+            fontWeight={600}
+            textAnchor="middle"
+            pointerEvents="none"
+          >
+            {displayChange}
+          </text>
+        )}
+      </g>
+    );
+  }
+
+  const fill = fillColor;
+  const ticker = displayLabel;
+  const percentLabel = displayChange;
+  const textColor = '#F9FAFB';
+  const centerX = x + width / 2;
+  const centerY = y + height / 2;
+  const tickerFont = Math.max(10, Math.min( Math.floor(width / 4.5), Math.floor(height / 2.8), 22));
+  const pctFont = Math.max(9, Math.min( Math.floor(width / 6), Math.floor(height / 3.2), 16));
+
+  return (
+    <g>
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        fill={fill}
+        stroke={theme.colors.backgroundDark}
+        strokeWidth={0.6}
+        rx={2}
+        ry={2}
+      />
+      {width > 24 && height > 18 && (
+        <text
+          x={centerX}
+          y={centerY - 2}
+          fill={textColor}
+          fontSize={tickerFont}
+          fontWeight={700}
+          textAnchor="middle"
+          dominantBaseline="central"
+          style={{ paintOrder: 'stroke' }}
+          stroke="rgba(0,0,0,0.45)"
+          strokeWidth={2}
+          pointerEvents="none"
+        >
+          {ticker}
+        </text>
+      )}
+      {width > 28 && height > 28 && (
+        <text
+          x={centerX}
+          y={centerY + tickerFont * 0.6}
+          fill={textColor}
+          fontSize={pctFont}
+          textAnchor="middle"
+          dominantBaseline="hanging"
+          style={{ paintOrder: 'stroke' }}
+          stroke='rgba(0,0,0,0.45)'
+          strokeWidth={1.5}
+          pointerEvents='none'
+        >
+          {percentLabel}
+        </text>
+      )}
+    </g>
+  );
+};
+
+const renderHeatmapTooltip: React.FC<TooltipProps<number, string>> = ({ active, payload }) => {
+  if (!active || !payload || payload.length === 0) {
+    return null;
+  }
+
+  const node = payload[0]?.payload?.payload ?? payload[0]?.payload;
+  if (!node || Array.isArray(node.children)) {
+    return null;
+  }
+
+  const display = node.displayChange ?? node.display_change ?? formatChangePercent(node.change_pct ?? node.change ?? 0);
+
+  return (
+    <HeatmapTooltipContainer>
+      <HeatmapTooltipTitle>
+        {node.label || node.name}
+      </HeatmapTooltipTitle>
+      <HeatmapTooltipText>변동: {display}</HeatmapTooltipText>
+      <HeatmapTooltipText>가격: ${node.close?.toFixed?.(2) ?? '-'}</HeatmapTooltipText>
+      <HeatmapTooltipText>시가총액: {formatMarketCap(node.market_cap)}</HeatmapTooltipText>
+      {node.sector && <HeatmapTooltipText>섹터: {node.sector}</HeatmapTooltipText>}
+      {node.industry && <HeatmapTooltipText>산업: {node.industry}</HeatmapTooltipText>}
+    </HeatmapTooltipContainer>
+  );
+};
+
 
 export const Dashboard: React.FC = () => {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState(0);
-  const [portfolioData, setPortfolioData] = useState<PortfolioStock[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [heatmapData, setHeatmapData] = useState<MarketHeatmapResponse | null>(null);
+  const [heatmapLoading, setHeatmapLoading] = useState(false);
+  const [heatmapError, setHeatmapError] = useState<string | null>(null);
   const [tickerOptions, setTickerOptions] = useState<string[]>([]);
   const [selectedTickers, setSelectedTickers] = useState<string[]>(['S&P500']);
   const [tickerColors, setTickerColors] = useState<Record<string, string>>({});
@@ -654,6 +953,28 @@ export const Dashboard: React.FC = () => {
     }
   }, [user]);
 
+  const loadHeatmap = useCallback(async () => {
+    try {
+      if (heatmapLoading || heatmapData) {
+        return;
+      }
+      setHeatmapLoading(true);
+      setHeatmapError(null);
+      const response = await getMarketHeatmap();
+      if (response?.success) {
+        const decorated = decorateHeatmapTree(response.sectors || []);
+        setHeatmapData({ ...response, sectors: decorated as any });
+      } else {
+        setHeatmapError('시장 히트맵 데이터를 불러오지 못했습니다.');
+      }
+    } catch (error) {
+      console.error('시장 히트맵 로드 실패:', error);
+      setHeatmapError('시장 히트맵 데이터를 불러오지 못했습니다.');
+    } finally {
+      setHeatmapLoading(false);
+    }
+  }, [heatmapData, heatmapLoading]);
+
   const handleEditAlpha = (alpha: StoredAlpha) => {
     setEditingAlpha(alpha);
     alphaForm.setFieldsValue({
@@ -673,44 +994,15 @@ export const Dashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    const loadDashboardData = async () => {
-      if (!user) return;
-
-      try {
-        setLoading(true);
-
-        const portfolioResponse = await fetch('/api/csv/user/portfolio', {
-          credentials: 'include',
-        });
-
-        if (portfolioResponse.ok) {
-          const portfolioResult = await portfolioResponse.json();
-          const portfolioItems: PortfolioStock[] = portfolioResult.portfolio || [];
-          setPortfolioData(portfolioItems);
-
-          if (portfolioItems.length > 0 && selectedTickers.length === 0) {
-            const defaultTickers = portfolioItems
-              .map((stock) => stock.ticker)
-              .filter((ticker): ticker is string => typeof ticker === 'string' && ticker.trim().length > 0)
-              .slice(0, 4);
-
-            if (defaultTickers.length > 0) {
-              setSelectedTickers(defaultTickers);
-              ensureTickerColors(defaultTickers);
-              setAutoAnalyzeQueued(true);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('대시보드 데이터 로드 실패:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadDashboardData();
+    if (!user) return;
     loadAlphas();
-  }, [user, loadAlphas, ensureTickerColors, selectedTickers.length]);
+  }, [user, loadAlphas]);
+
+  useEffect(() => {
+    if (activeTab === 2 && !heatmapData && !heatmapLoading) {
+      loadHeatmap();
+    }
+  }, [activeTab, heatmapData, heatmapLoading, loadHeatmap]);
 
 
   const renderAssetOverview = () => {
@@ -1213,172 +1505,60 @@ export const Dashboard: React.FC = () => {
     );
   };
 
-  const renderStockManagement = () => (
-    <>
+  const renderSectorHeatmap = () => {
+    const sectors = heatmapData?.sectors ?? [];
+    const legendMarks = [-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03];
+    return (
       <ChartCard>
-        <ChartTitle>보유 주식</ChartTitle>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: theme.spacing.sm }}>
-          <StockListHeader>
-            <span>종목명</span>
-            <span style={{ textAlign: 'right' }}>수량</span>
-            <span style={{ textAlign: 'right' }}>평균단가</span>
-            <span style={{ textAlign: 'right' }}>평가금액</span>
-            <span style={{ textAlign: 'right' }}>수익률</span>
-          </StockListHeader>
-          {loading ? (
-            <div style={{ textAlign: 'center', padding: theme.spacing.xl, color: theme.colors.textSecondary }}>
-              주식 데이터를 불러오는 중...
-            </div>
-          ) : portfolioData.length > 0 ? (
-            portfolioData.map((stock, idx) => {
-              const totalValue = stock.quantity * stock.current_price;
-              const profitLoss = ((stock.current_price - stock.avg_price) / stock.avg_price) * 100;
-
-              return (
-                <StockListItem key={idx}>
-                  <div>
-                    <div style={{ color: theme.colors.textPrimary, fontWeight: 600, fontSize: theme.typography.fontSize.body }}>{stock.company_name}</div>
-                    <div style={{ color: theme.colors.textSecondary, fontSize: theme.typography.fontSize.caption }}>{stock.ticker}</div>
-                  </div>
-                  <span style={{ textAlign: 'right', color: theme.colors.textPrimary, fontSize: theme.typography.fontSize.body }}>{stock.quantity}주</span>
-                  <span style={{ textAlign: 'right', color: theme.colors.textPrimary, fontSize: theme.typography.fontSize.body }}>{Number(stock.avg_price).toLocaleString()}원</span>
-                  <span style={{ textAlign: 'right', color: theme.colors.textPrimary, fontWeight: 600, fontSize: theme.typography.fontSize.body }}>{totalValue.toLocaleString()}원</span>
-                  <span style={{ textAlign: 'right', color: profitLoss >= 0 ? theme.colors.accentGold : theme.colors.textSecondary, fontWeight: 600, fontSize: theme.typography.fontSize.body }}>
-                    {profitLoss >= 0 ? '+' : ''}{profitLoss.toFixed(2)}%
-                  </span>
-                </StockListItem>
-              );
-            })
-          ) : (
-            <div style={{ textAlign: 'center', padding: theme.spacing.xl, color: theme.colors.textSecondary }}>
-              보유 주식이 없습니다
-            </div>
-          )}
-        </div>
-      </ChartCard>
-
-      <ChartsContainer>
-        <ChartCard>
-          <ChartTitle>섹터별 분포</ChartTitle>
-          <DoughnutWrapper>
-            <Doughnut
-              data={(() => {
-                if (portfolioData.length === 0) {
-                  return {
-                    labels: ['데이터 없음'],
-                    datasets: [{
-                      data: [100],
-                      backgroundColor: ['rgba(154, 160, 166, 0.5)'],
-                      borderColor: ['rgba(95, 99, 104, 0.5)'],
-                      borderWidth: 2,
-                    }],
-                  };
-                }
-
-                // 섹터별 데이터 집계
-                const sectorData = portfolioData.reduce<Record<string, number>>((acc, stock) => {
-                  const sector = stock.sector || '기타';
-                  const value = stock.quantity * stock.current_price;
-                  acc[sector] = (acc[sector] ?? 0) + value;
-                  return acc;
-                }, {} as Record<string, number>);
-
-                const totalValue = Object.values(sectorData).reduce((sum, value) => sum + value, 0);
-                const sectors = Object.keys(sectorData);
-                const safeTotalValue = totalValue === 0 ? 1 : totalValue;
-                const percentages = sectors.map(sector => (sectorData[sector] / safeTotalValue) * 100);
-
-                return {
-                  labels: sectors,
-                  datasets: [{
-                    data: percentages,
-                    backgroundColor: [
-                      'rgba(212, 175, 55, 0.9)',
-                      'rgba(184, 134, 11, 0.7)',
-                      'rgba(232, 234, 237, 0.6)',
-                      'rgba(154, 160, 166, 0.5)',
-                      'rgba(107, 114, 128, 0.4)',
-                    ].slice(0, sectors.length),
-                    borderColor: [
-                      'rgba(184, 134, 11, 1)',
-                      'rgba(160, 120, 8, 1)',
-                      'rgba(255, 255, 255, 0.3)',
-                      'rgba(95, 99, 104, 0.5)',
-                      'rgba(75, 85, 99, 0.5)',
-                    ].slice(0, sectors.length),
-                    borderWidth: 2,
-                  }],
-                };
-              })()}
-              options={{
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                  legend: {
-                    position: 'bottom' as const,
-                    labels: {
-                      color: theme.colors.textPrimary,
-                      font: {
-                        size: 12,
-                      },
-                      padding: 15,
-                    },
-                  },
-                  tooltip: {
-                    backgroundColor: theme.colors.backgroundTertiary,
-                    titleColor: theme.colors.textPrimary,
-                    bodyColor: theme.colors.textSecondary,
-                    borderColor: theme.colors.border,
-                    borderWidth: 1,
-                  },
-                },
-              }}
-            />
-          </DoughnutWrapper>
-        </ChartCard>
-
-        <ChartCard>
-          <ChartTitle>최근 매매 내역</ChartTitle>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: theme.spacing.sm }}>
-            {loading ? (
-              <div style={{ textAlign: 'center', padding: theme.spacing.xl, color: theme.colors.textSecondary }}>
-                매매 내역을 불러오는 중...
-              </div>
-            ) : portfolioData.length > 0 ? (
-              // 포트폴리오 구매 날짜를 매매 내역으로 표시
-              portfolioData
-                .sort((a, b) => new Date(b.purchase_date).getTime() - new Date(a.purchase_date).getTime())
-                .slice(0, 5)
-                .map((stock, idx) => (
-                  <TransactionItem key={idx}>
-                    <div>
-                      <div style={{ color: theme.colors.textPrimary, fontWeight: 600, fontSize: theme.typography.fontSize.body }}>
-                        {stock.company_name} 매수
-                      </div>
-                      <div style={{ color: theme.colors.textSecondary, fontSize: theme.typography.fontSize.caption }}>
-                        {new Date(stock.purchase_date).toLocaleDateString()}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ color: theme.colors.accentGold, fontWeight: 600, fontSize: theme.typography.fontSize.body }}>
-                        {stock.quantity}주 @ {Number(stock.avg_price).toLocaleString()}원
-                      </div>
-                      <div style={{ color: theme.colors.textSecondary, fontSize: theme.typography.fontSize.caption }}>
-                        {(stock.quantity * stock.avg_price).toLocaleString()}원
-                      </div>
-                    </div>
-                  </TransactionItem>
-                ))
-            ) : (
-              <div style={{ textAlign: 'center', padding: theme.spacing.xl, color: theme.colors.textSecondary }}>
-                매매 내역이 없습니다
-              </div>
-            )}
+        <HeatmapHeader>
+          <div>
+            <ChartTitle>섹터 수익률 히트맵</ChartTitle>
+            <HeatmapInfoText>
+              기준일: {heatmapData?.date ?? '데이터 없음'}
+            </HeatmapInfoText>
           </div>
-        </ChartCard>
-      </ChartsContainer>
-    </>
-  );
+          <HeatmapLegend>
+            <span>일간 수익률</span>
+            <HeatmapLegendScale>
+              {legendMarks.map((mark) => (
+                <HeatmapLegendItem key={mark}>
+                  <HeatmapLegendColor style={{ background: getHeatmapColor(mark) }} />
+                  <span>{mark > 0 ? '+' : ''}{(mark * 100).toFixed(0)}%</span>
+                </HeatmapLegendItem>
+              ))}
+            </HeatmapLegendScale>
+          </HeatmapLegend>
+        </HeatmapHeader>
+
+        {heatmapLoading ? (
+          <div style={{ textAlign: 'center', padding: theme.spacing.xl, color: theme.colors.textSecondary }}>
+            히트맵을 불러오는 중...
+          </div>
+        ) : heatmapError ? (
+          <div style={{ textAlign: 'center', padding: theme.spacing.xl, color: theme.colors.error }}>
+            {heatmapError}
+          </div>
+        ) : sectors.length === 0 ? (
+          <Empty description="표시할 데이터가 없습니다." />
+        ) : (
+          <HeatmapWrapper>
+            <ResponsiveContainer width="100%" height="100%">
+              <Treemap
+                data={sectors}
+                dataKey="value"
+                nameKey="name"
+                stroke={theme.colors.backgroundDark}
+                isAnimationActive={false}
+                content={<HeatmapNode />}
+              >
+                <RechartsTooltip content={renderHeatmapTooltip} />
+              </Treemap>
+            </ResponsiveContainer>
+          </HeatmapWrapper>
+        )}
+      </ChartCard>
+    );
+  };
 
   return (
     <DashboardContainer>
@@ -1390,14 +1570,14 @@ export const Dashboard: React.FC = () => {
           알파 관리
         </DynamicIslandButton>
         <DynamicIslandButton $active={activeTab === 2} onClick={() => setActiveTab(2)}>
-          보유 주식 관리
+          섹터 히트맵
         </DynamicIslandButton>
       </DynamicIslandNav>
 
       <TabContent>
         {activeTab === 0 && renderAssetOverview()}
         {activeTab === 1 && renderAlphaManagement()}
-        {activeTab === 2 && renderStockManagement()}
+        {activeTab === 2 && renderSectorHeatmap()}
       </TabContent>
 
       {/* 알파 추가/수정 모달 */}

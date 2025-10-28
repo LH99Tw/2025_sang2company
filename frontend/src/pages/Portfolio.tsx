@@ -22,7 +22,6 @@ import {
   FundOutlined,
   BarChartOutlined,
   FilterOutlined,
-  SlidersOutlined,
 } from '@ant-design/icons';
 import { GlassCard } from '../components/common/GlassCard';
 import { GlassButton } from '../components/common/GlassButton';
@@ -41,58 +40,6 @@ const PageContainer = styled.div`
   display: flex;
   flex-direction: column;
   gap: ${theme.spacing.xl};
-`;
-
-const Header = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: ${theme.spacing.sm};
-`;
-
-const Title = styled.h1`
-  font-size: ${theme.typography.fontSize.h1};
-  color: ${theme.colors.textPrimary};
-  margin: 0;
-  font-weight: 700;
-`;
-
-const Subtitle = styled.span`
-  color: ${theme.colors.textSecondary};
-  font-size: ${theme.typography.fontSize.body};
-`;
-
-const Layout = styled.div`
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  gap: ${theme.spacing.xl};
-  flex-wrap: wrap;
-`;
-
-const SettingsPanel = styled(GlassCard)`
-  flex: 0 0 420px;
-  display: flex;
-  flex-direction: column;
-  gap: ${theme.spacing.lg};
-`;
-
-const SettingsHeader = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-`;
-
-const SettingsTitle = styled.h2`
-  margin: 0;
-  font-size: ${theme.typography.fontSize.h4};
-  color: ${theme.colors.textPrimary};
-  font-weight: 700;
-`;
-
-const SettingsBody = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: ${theme.spacing.md};
 `;
 
 const FormGroup = styled.div`
@@ -146,6 +93,181 @@ const SliderWeight = styled.span`
 
 const WeightSlider = styled(Slider)`
   flex: 1;
+
+  .ant-slider-track {
+    background: ${theme.colors.accentGold} !important;
+  }
+
+  .ant-slider-handle::after {
+    box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.45) !important;
+  }
+`;
+
+const ControlPanel = styled(GlassCard)`
+  display: flex;
+  flex-direction: column;
+  gap: ${theme.spacing.md};
+  padding: ${theme.spacing.md} ${theme.spacing.lg};
+`;
+
+const ControlBar = styled.div`
+  display: flex;
+  align-items: flex-end;
+  gap: ${theme.spacing.sm};
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: ${theme.spacing.xs};
+`;
+
+const ControlField = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+`;
+
+const ControlLabel = styled.span`
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: ${theme.colors.textSecondary};
+  font-size: ${theme.typography.fontSize.caption};
+  font-weight: 600;
+  letter-spacing: 0.05em;
+`;
+
+const SrOnly = styled.span`
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  width: 1px;
+`;
+
+const ControlActionField = styled.div`
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  flex-shrink: 0;
+`;
+
+const CompactSelect = styled(Select)`
+  width: 100%;
+
+  .ant-select-selector {
+    background: ${theme.colors.liquidGlass} !important;
+    border: 1px solid ${theme.colors.liquidGlassBorder} !important;
+    border-radius: 10px !important;
+    min-height: 38px !important;
+    padding: 4px ${theme.spacing.sm} !important;
+    display: flex !important;
+    align-items: center !important;
+  }
+
+  .ant-select-selection-item {
+    display: flex;
+    align-items: center;
+    color: ${theme.colors.textPrimary};
+    font-size: 13px;
+  }
+
+  .ant-select-selection-placeholder {
+    color: ${theme.colors.textSecondary};
+    font-size: 13px;
+  }
+
+  &.ant-select-focused .ant-select-selector,
+  .ant-select-selector:hover {
+    border-color: ${theme.colors.accentGold} !important;
+  }
+`;
+
+const CompactDatePicker = styled(DatePicker)`
+  width: 100%;
+  height: 38px;
+
+  .ant-picker-input > input {
+    font-size: 13px;
+    color: ${theme.colors.textPrimary};
+  }
+
+  .ant-picker-input {
+    display: flex;
+    align-items: center;
+  }
+
+  .ant-picker-suffix {
+    color: ${theme.colors.textSecondary};
+  }
+
+  &.ant-picker-focused,
+  &:hover {
+    border-color: ${theme.colors.accentGold};
+  }
+`;
+
+const CompactInputNumber = styled(InputNumber)`
+  width: 100%;
+  height: 38px;
+  border-radius: 10px;
+
+  .ant-input-number-input {
+    height: 38px;
+    padding: 0 ${theme.spacing.sm};
+    font-size: 13px;
+  }
+
+  &.ant-input-number-focused,
+  &:hover {
+    border-color: ${theme.colors.accentGold} !important;
+  }
+`;
+
+const CompactRadioGroup = styled(Radio.Group)`
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+
+  .ant-radio-button-wrapper {
+    height: 38px;
+    line-height: 38px;
+    padding: 0 12px;
+    font-size: 13px;
+    border: 1px solid ${theme.colors.liquidGlassBorder};
+    background: ${theme.colors.liquidGlass};
+    color: ${theme.colors.textSecondary};
+  }
+
+  .ant-radio-button-wrapper:not(:first-child)::before {
+    display: none;
+  }
+
+  .ant-radio-button-wrapper-checked,
+  .ant-radio-button-wrapper-checked:hover {
+    background: ${theme.colors.accentGold};
+    border-color: ${theme.colors.accentGold};
+    color: ${theme.colors.textPrimary};
+  }
+`;
+
+const SwitchRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border: 1px solid ${theme.colors.liquidGlassBorder};
+  border-radius: 10px;
+  background: ${theme.colors.liquidGlass};
+  min-height: 38px;
+`;
+
+const CompactSwitch = styled(Switch)`
+  &.ant-switch-checked {
+    background: ${theme.colors.accentGold};
+  }
 `;
 
 const ResultsContainer = styled.div`
@@ -219,18 +341,6 @@ const ResultsCard = styled(GlassCard)`
   .ant-table-tbody > tr:hover > td {
     background: ${theme.colors.liquidGlassHover} !important;
   }
-`;
-
-const ActionsRow = styled.div`
-  display: flex;
-  justify-content: flex-end;
-  gap: ${theme.spacing.sm};
-  flex-wrap: wrap;
-`;
-
-const NoFactors = styled.div`
-  color: ${theme.colors.textSecondary};
-  font-size: ${theme.typography.fontSize.caption};
 `;
 
 interface NormalizedWeights {
@@ -312,16 +422,16 @@ export const Portfolio: React.FC = () => {
     [factorList],
   );
 
-  const handleFactorsChange = (values: string[]) => {
-    setSelectedFactors(values);
-    setFactorWeights(prev => {
-      const next: Record<string, number> = {};
-      values.forEach(value => {
-        next[value] = Number.isFinite(prev[value]) ? prev[value] : 1;
-      });
-      return next;
+const handleFactorsChange = (values: string[]) => {
+  setSelectedFactors(values);
+  setFactorWeights(prev => {
+    const next: Record<string, number> = {};
+    values.forEach(value => {
+      next[value] = Number.isFinite(prev[value]) ? prev[value] : 1;
     });
-  };
+    return next;
+  });
+};
 
   const handleWeightChange = (factor: string, value: number) => {
     setFactorWeights(prev => ({
@@ -459,218 +569,200 @@ export const Portfolio: React.FC = () => {
 
   return (
     <PageContainer>
-      <Header>
-        <Title>알파 포트폴리오</Title>
-        <Subtitle>좌측에서 알파와 가중치를 설정하고, 우측에서 결과를 확인하세요.</Subtitle>
-      </Header>
-
-      <Layout>
-        <SettingsPanel>
-          <SettingsHeader>
-            <SettingsTitle>
-              <SlidersOutlined style={{ marginRight: 8 }} />
-              설정
-            </SettingsTitle>
-            <InlineNote>Softmax로 가중치를 정규화합니다.</InlineNote>
-          </SettingsHeader>
-
-          <SettingsBody>
-            <FormGroup>
-              <Label>
-                <FilterOutlined />
-                알파 선택
-              </Label>
-              <Select
-                mode="multiple"
-                allowClear
-                showSearch
-                placeholder="알파를 선택하세요"
-                onChange={handleFactorsChange}
-                value={selectedFactors}
-                loading={factorsLoading}
-                optionFilterProp="value"
-              >
-                {factorOptions.map(option => (
-                  <Option key={option.value} value={option.value}>
-                    {option.label}
-                  </Option>
-                ))}
-              </Select>
-              {selectedFactors.length === 0 && <NoFactors>선택된 알파가 없습니다.</NoFactors>}
-            </FormGroup>
-
-          <FormGroup>
-            <Label>평가 시점</Label>
-            <DatePicker
+      <ControlPanel>
+        <ControlBar>
+          <ControlField style={{ minWidth: 140, maxWidth: 180 }}>
+            <ControlLabel>
+              <FilterOutlined style={{ marginRight: 4 }} />
+              알파 선택
+            </ControlLabel>
+            <CompactSelect
+              mode="multiple"
+              allowClear
+              showSearch
+              placeholder="알파를 선택하세요"
+              onChange={(value) => handleFactorsChange(value as string[])}
+              value={selectedFactors}
+              loading={factorsLoading}
+              optionFilterProp="value"
               style={{ width: '100%' }}
+            >
+              {factorOptions.map(option => (
+                <Option key={option.value} value={option.value}>
+                  {option.label}
+                </Option>
+              ))}
+            </CompactSelect>
+            
+          </ControlField>
+
+          <ControlField style={{ minWidth: 160 }}>
+            <ControlLabel>평가 시점</ControlLabel>
+            <CompactDatePicker
               value={asOfDate}
-              onChange={value => setAsOfDate(value)}
+              onChange={(value) =>
+                setAsOfDate(Array.isArray(value) ? (value[0] ?? null) : value ?? null)
+              }
               allowClear
             />
-            <InlineNote>지정한 날짜 기준으로 알파를 계산합니다. 비워두면 최신 데이터가 사용됩니다.</InlineNote>
-          </FormGroup>
+          </ControlField>
 
-            <FormGroup>
-              <Label>선별 기준</Label>
-              <Radio.Group
-                value={selectionMode}
-                onChange={event => setSelectionMode(event.target.value)}
-              >
-                <Space direction="vertical">
-                  <Radio value="percentage">상위 퍼센트</Radio>
-                  <Radio value="count">상위 개수</Radio>
-                </Space>
-              </Radio.Group>
-            </FormGroup>
-
-            {selectionMode === 'percentage' ? (
-              <FormGroup>
-                <Label>상위 퍼센트 (%)</Label>
-                <InputNumber
-                  min={1}
-                  max={100}
-                  value={topPercentage}
-                  onChange={value => setTopPercentage(value ?? 1)}
-                  style={{ width: '100%' }}
-                />
-              </FormGroup>
-            ) : (
-              <FormGroup>
-                <Label>상위 종목 수</Label>
-                <InputNumber
-                  min={1}
-                  max={500}
-                  value={topCount}
-                  onChange={value => setTopCount(value ?? 1)}
-                  style={{ width: '100%' }}
-                />
-              </FormGroup>
-            )}
-
-            <FormGroup>
-              <Label>알파 가중치 조정</Label>
-              {selectedFactors.length === 0 ? (
-                <NoFactors>알파를 선택하면 가중치를 조정할 수 있습니다.</NoFactors>
-              ) : (
-                <SliderContainer>
-                  {selectedFactors.map(factor => (
-                    <SliderRow key={factor}>
-                      <SliderLabel>
-                        <span>{factor}</span>
-                        <SliderWeight>
-                          비중 {formatPercent(normalizedWeights[factor])}
-                        </SliderWeight>
-                      </SliderLabel>
-                      <WeightSlider
-                        max={10}
-                        min={0}
-                        step={0.1}
-                        value={factorWeights[factor] ?? 1}
-                        onChange={value => handleWeightChange(factor, Number(value))}
-                        tooltip={{ formatter: value => `가중치 ${value}` }}
-                      />
-                    </SliderRow>
-                  ))}
-                </SliderContainer>
-              )}
-            </FormGroup>
-
-            <FormGroup>
-              <Label>상세 팩터 정보</Label>
-              <Switch checked={includeBreakdown} onChange={checked => setIncludeBreakdown(checked)} />
-            </FormGroup>
-          </SettingsBody>
-
-          <ActionsRow>
-            <GlassButton
-              icon={<ThunderboltOutlined />}
-              onClick={handleGenerate}
-              loading={generateLoading}
-              disabled={factorsLoading}
+          <ControlField style={{ minWidth: 150 }}>
+            <ControlLabel>선별 기준</ControlLabel>
+            <CompactRadioGroup
+              value={selectionMode}
+              onChange={event => setSelectionMode(event.target.value)}
+              buttonStyle="solid"
             >
-              포트폴리오 생성
-            </GlassButton>
-          </ActionsRow>
-        </SettingsPanel>
+              <Radio.Button value="percentage">퍼센트</Radio.Button>
+              <Radio.Button value="count">개수</Radio.Button>
+            </CompactRadioGroup>
+          </ControlField>
 
-        <ResultsContainer>
-          {generateLoading && (
-            <GlassCard>
-              <Spin />
-            </GlassCard>
-          )}
+          <ControlField style={{ minWidth: 140 }}>
+            <ControlLabel>{selectionMode === 'percentage' ? '상위 퍼센트 (%)' : '상위 종목 수'}</ControlLabel>
+            <CompactInputNumber
+              min={selectionMode === 'percentage' ? 1 : 1}
+              max={selectionMode === 'percentage' ? 100 : 500}
+              value={selectionMode === 'percentage' ? topPercentage : topCount}
+              onChange={value => {
+                const next = Number(value ?? 1);
+                if (selectionMode === 'percentage') {
+                  setTopPercentage(Math.min(Math.max(next, 1), 100));
+                } else {
+                  setTopCount(Math.min(Math.max(next, 1), 500));
+                }
+              }}
+            />
+          </ControlField>
 
-          {result ? (
-            <>
-              <SummaryGrid>
-                <SummaryCard>
-                  <SummaryHeader>
-                    <SummaryTitle>선별 종목</SummaryTitle>
-                    <ThunderboltOutlined style={{ color: theme.colors.accentPrimary, fontSize: 22 }} />
-                  </SummaryHeader>
-                  <SummaryValue>{result.parameters.selected_stocks ?? 0} 종목</SummaryValue>
-                  <SummarySubtitle>{result.summary.selection_criteria}</SummarySubtitle>
-                </SummaryCard>
+          <ControlField style={{ minWidth: 140 }}>
+            <ControlLabel>상세 팩터 정보</ControlLabel>
+            <SwitchRow>
+              <span style={{ fontSize: 12, color: theme.colors.textSecondary }}>
+                {includeBreakdown ? '표시' : '숨김'}
+              </span>
+              <CompactSwitch
+                checked={includeBreakdown}
+                onChange={checked => setIncludeBreakdown(checked)}
+              />
+            </SwitchRow>
+          </ControlField>
 
-                <SummaryCard>
-                  <SummaryHeader>
-                    <SummaryTitle>사용된 알파</SummaryTitle>
-                    <BarChartOutlined style={{ color: theme.colors.info, fontSize: 22 }} />
-                  </SummaryHeader>
-                  <SummaryValue>{result.summary.used_factor_count ?? 0}</SummaryValue>
-              <SummarySubtitle>
-                요청 {result.summary.requested_factor_count ?? 0}개 / 누락{' '}
-                {(result.missing_factors || []).length}개
-              </SummarySubtitle>
-            </SummaryCard>
+          <ControlActionField>
+              <GlassButton
+                icon={<ThunderboltOutlined />}
+                onClick={handleGenerate}
+                loading={generateLoading}
+                disabled={factorsLoading}
+                style={{ height: 40, width: 44, padding: 0 }}
+              >
+                <SrOnly>포트폴리오 생성</SrOnly>
+              </GlassButton>
+          </ControlActionField>
+        </ControlBar>
 
-            <SummaryCard>
+        {selectedFactors.length > 0 && (
+          <SliderContainer>
+            {selectedFactors.map(factor => (
+              <SliderRow key={factor}>
+                <SliderLabel>
+                  <span>{factor}</span>
+                  <SliderWeight>
+                    비중 {formatPercent(normalizedWeights[factor])}
+                  </SliderWeight>
+                </SliderLabel>
+                <WeightSlider
+                  max={10}
+                  min={0}
+                  step={0.1}
+                  value={factorWeights[factor] ?? 1}
+                  onChange={value => handleWeightChange(factor, Number(value))}
+                  tooltip={{ formatter: value => `가중치 ${value}` }}
+                />
+              </SliderRow>
+            ))}
+          </SliderContainer>
+        )}
+      </ControlPanel>
+
+      <ResultsContainer>
+        {generateLoading && (
+          <GlassCard>
+            <Spin />
+          </GlassCard>
+        )}
+
+        {result ? (
+          <>
+            <SummaryGrid>
+              <SummaryCard>
+                <SummaryHeader>
+                  <SummaryTitle>선별 종목</SummaryTitle>
+                  <ThunderboltOutlined style={{ color: theme.colors.accentPrimary, fontSize: 22 }} />
+                </SummaryHeader>
+                <SummaryValue>{result.parameters.selected_stocks ?? 0} 종목</SummaryValue>
+                <SummarySubtitle>{result.summary.selection_criteria}</SummarySubtitle>
+              </SummaryCard>
+
+              <SummaryCard>
+                <SummaryHeader>
+                  <SummaryTitle>사용된 알파</SummaryTitle>
+                  <BarChartOutlined style={{ color: theme.colors.accentGold, fontSize: 22 }} />
+                </SummaryHeader>
+                <SummaryValue>{result.summary.used_factor_count ?? 0}</SummaryValue>
+                <SummarySubtitle>
+                  요청 {result.summary.requested_factor_count ?? 0}개 / 누락{' '}
+                  {(result.missing_factors || []).length}개
+                </SummarySubtitle>
+              </SummaryCard>
+
+              <SummaryCard>
+                <SummaryHeader>
+                  <SummaryTitle>합성 점수 범위</SummaryTitle>
+                  <FundOutlined style={{ color: theme.colors.accentGold, fontSize: 22 }} />
+                </SummaryHeader>
+                <SummaryValue>{formatScore(result.summary.best_score)}</SummaryValue>
+                <SummarySubtitle>최저 {formatScore(result.summary.worst_score)}</SummarySubtitle>
+              </SummaryCard>
+            </SummaryGrid>
+
+            <ResultsCard>
               <SummaryHeader>
-                <SummaryTitle>합성 점수 범위</SummaryTitle>
-                <FundOutlined style={{ color: theme.colors.accentPrimary, fontSize: 22 }} />
-                  </SummaryHeader>
-                  <SummaryValue>{formatScore(result.summary.best_score)}</SummaryValue>
-                  <SummarySubtitle>최저 {formatScore(result.summary.worst_score)}</SummarySubtitle>
-                </SummaryCard>
-              </SummaryGrid>
+                <SummaryTitle>선별된 종목</SummaryTitle>
+                <InlineNote>
+                  평가 시점: {result.parameters.as_of_date ?? result.parameters.end_date ?? '최신'}
+                </InlineNote>
+              </SummaryHeader>
 
-              <ResultsCard>
-                <SettingsHeader>
-                  <SettingsTitle>선별된 종목</SettingsTitle>
-                  <InlineNote>
-                    평가 시점: {result.parameters.as_of_date ?? result.parameters.end_date ?? '최신'}
-                  </InlineNote>
-                </SettingsHeader>
+              {result.stocks.length > 0 ? (
+                <Table
+                  columns={columns}
+                  dataSource={result.stocks}
+                  rowKey={record => `${record.ticker}-${record.rank}`}
+                  pagination={{ pageSize: 20 }}
+                />
+              ) : (
+                <Empty description="표시할 종목이 없습니다." />
+              )}
 
-                {result.stocks.length > 0 ? (
-                  <Table
-                    columns={columns}
-                    dataSource={result.stocks}
-                    rowKey={record => `${record.ticker}-${record.rank}`}
-                    pagination={{ pageSize: 20 }}
-                  />
-                ) : (
-                  <Empty description="표시할 종목이 없습니다." />
-                )}
-
-                {result.missing_factor_errors && Object.keys(result.missing_factor_errors).length > 0 && (
-                  <Space wrap>
-                    {Object.entries(result.missing_factor_errors).map(([factor, reason]) => (
-                      <Tooltip key={factor} title={reason}>
-                        <Tag color="red">미포함: {factor}</Tag>
-                      </Tooltip>
-                    ))}
-                  </Space>
-                )}
-              </ResultsCard>
-            </>
-          ) : (
-            <GlassCard>
-              <Empty description="조건을 설정하고 포트폴리오를 생성하세요." />
-            </GlassCard>
-          )}
-        </ResultsContainer>
-      </Layout>
+              {result.missing_factor_errors && Object.keys(result.missing_factor_errors).length > 0 && (
+                <Space wrap>
+                  {Object.entries(result.missing_factor_errors).map(([factor, reason]) => (
+                    <Tooltip key={factor} title={reason}>
+                      <Tag color="red">미포함: {factor}</Tag>
+                    </Tooltip>
+                  ))}
+                </Space>
+              )}
+            </ResultsCard>
+          </>
+        ) : (
+          <GlassCard>
+            <Empty description="조건을 설정하고 포트폴리오를 생성하세요." />
+          </GlassCard>
+        )}
+      </ResultsContainer>
     </PageContainer>
   );
 };

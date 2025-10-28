@@ -9,7 +9,111 @@ import gc
 import os
 import time
 import json
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+SEC_BASE_URL = "https://data.sec.gov"
+SEC_HEADERS = {
+    'User-Agent': 'MyCompany MyApp contact@example.com',
+    'Accept': 'application/json'
+}
+
+COMPANY_TICKERS_CACHE = None
+
+
+def _load_company_tickers():
+    global COMPANY_TICKERS_CACHE
+    if COMPANY_TICKERS_CACHE is not None:
+        return COMPANY_TICKERS_CACHE
+
+    company_tickers_path = os.path.join(database_path, "company_tickers.json")
+    if os.path.exists(company_tickers_path):
+        with open(company_tickers_path, 'r') as f:
+            COMPANY_TICKERS_CACHE = json.load(f)
+    else:
+        COMPANY_TICKERS_CACHE = {}
+    return COMPANY_TICKERS_CACHE
+
+
+def _ticker_variations(ticker: str) -> set[str]:
+    upper = ticker.upper().strip()
+    variations = {upper}
+    replacements = [('-', '.'), ('-', ''), ('.', '-'), ('.', '')]
+    for old, new in replacements:
+        if old in upper:
+            variations.add(upper.replace(old, new))
+    variations.update({
+        'BRK-B': 'BRK.B',
+        'BRK.B': 'BRK-B',
+        'PSKY': 'PSNY',
+        'PSNY': 'PSKY'
+    }.get(upper, '').split(','))
+    return {v for v in variations if v}
+
+
+def get_company_cik_from_sec(ticker: str) -> str | None:
+    companies = _load_company_tickers()
+    variations = _ticker_variations(ticker)
+    for company_data in companies.values():
+        listed = company_data.get('ticker', '').upper()
+        if listed in variations:
+            return str(company_data.get('cik_str')).zfill(10)
+    return None
+
+
+def fetch_stock_info_from_sec(ticker: str) -> dict:
+    record = {
+        'Ticker': ticker,
+        'Company_Name': '',
+        'Sector': '',
+        'Industry': '',
+        'Country': '',
+        'Exchange': '',
+        'Market_Cap': 0,
+        'IPO_Date': '',
+        'Website': '',
+        'Business_Summary': ''
+    }
+
+    cik = get_company_cik_from_sec(ticker)
+    if not cik:
+        print(f"SEC: No CIK found for {ticker}")
+        return record
+
+    try:
+        url = f"{SEC_BASE_URL}/submissions/CIK{cik}.json"
+        response = requests.get(url, headers=SEC_HEADERS, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        record['Company_Name'] = data.get('name', record['Company_Name'])
+        record['Exchange'] = (data.get('exchanges') or [''])[0]
+        record['Website'] = data.get('website', record['Website'])
+        summary = data.get('description') or data.get('sicDescription') or ''
+        record['Business_Summary'] = summary
+
+        address = data.get('addresses', {}).get('business', {})
+        country = address.get('country') or address.get('stateOrCountryDescription')
+        if country and len(country) == 2:
+            country = 'United States'
+        record['Country'] = country or record['Country']
+
+        sector_overrides = {
+            'APP': ('Communication Services', 'Internet Content & Information'),
+            'BRK-B': ('Financial Services', 'Insurance—Diversified'),
+            'EME': ('Industrials', 'Engineering & Construction'),
+            'HOOD': ('Financial Services', 'Capital Markets'),
+            'IBKR': ('Financial Services', 'Capital Markets'),
+            'PSKY': ('Consumer Cyclical', 'Auto Manufacturers'),
+        }
+        sector, industry = sector_overrides.get(ticker.upper(), (None, None))
+        record['Sector'] = sector or record['Sector']
+        record['Industry'] = industry or data.get('sicDescription', record['Industry'])
+
+        return record
+    except Exception as e:
+        print(f"SEC request failed for {ticker}: {e}")
+        return record
 
 # Function to get the current list of S&P 500 components
 def get_sp500_tickers():
@@ -56,6 +160,7 @@ def map_ticker_to_yahoo(ticker):
         'BF.B': 'BF-B',    # Brown-Forman Class B
         'BRK.A': 'BRK-A',  # Berkshire Hathaway Class A
         'BF.A': 'BF-A',    # Brown-Forman Class A
+        'PSKY': 'PSNY',    # Polestar Automotive (Yahoo: PSNY)
     }
     
     # First check known mappings
@@ -95,67 +200,143 @@ def load_last_update_date():
     return None
 
 # Function to download stock information (sector, industry, country)
-def download_stock_info():
-    """Download stock information for all S&P 500 stocks"""
-    sp500_tickers = get_sp500_tickers()
-    stock_info_list = []
-    
-    print("Downloading stock information...")
-    
-    # Use ThreadPoolExecutor for parallel processing
-    def process_stock_info(ticker):
+def fetch_stock_info_record(ticker: str) -> dict:
+    """Fetch stock info for a single ticker via Yahoo Finance."""
+    default_record = {
+        'Ticker': ticker,
+        'Company_Name': '',
+        'Sector': '',
+        'Industry': '',
+        'Country': '',
+        'Exchange': '',
+        'Market_Cap': 0,
+        'IPO_Date': '',
+        'Website': '',
+        'Business_Summary': ''
+    }
+
+    yahoo_ticker = map_ticker_to_yahoo(ticker)
+    print(f"Getting stock info for {ticker} (Yahoo: {yahoo_ticker})...")
+
+    url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{yahoo_ticker}"
+    params = {
+        'modules': 'assetProfile,price,summaryProfile'
+    }
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36',
+        'Accept': 'application/json'
+    }
+
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        result = data.get('quoteSummary', {}).get('result', [{}])[0]
+
+        asset_profile = result.get('assetProfile', {})
+        summary_profile = result.get('summaryProfile', {})
+        price_info = result.get('price', {})
+
+        record = default_record.copy()
+        record.update(
+            Company_Name=price_info.get('longName') or price_info.get('shortName', ''),
+            Sector=asset_profile.get('sector') or summary_profile.get('sector', ''),
+            Industry=asset_profile.get('industry') or summary_profile.get('industry', ''),
+            Country=asset_profile.get('country') or summary_profile.get('country', ''),
+            Exchange=price_info.get('exchangeName', ''),
+            Market_Cap=price_info.get('marketCap', {}).get('raw', 0),
+            IPO_Date=price_info.get('firstTradeDateMilliseconds', ''),
+            Website=asset_profile.get('website', ''),
+            Business_Summary=asset_profile.get('longBusinessSummary', ''),
+        )
+
+        # Fallback to yfinance if critical fields missing
+        if not any([record['Sector'], record['Industry'], record['Company_Name']]):
+            raise ValueError('Incomplete data from Yahoo Finance API fallback to yfinance')
+
+        return record
+    except Exception as e:
+        print(f"Yahoo Finance request failed for {ticker}: {e}")
+
         try:
-            print(f"Getting info for {ticker}...")
-            # Map ticker to correct Yahoo Finance symbol
-            yahoo_ticker = map_ticker_to_yahoo(ticker)
             ticker_obj = yf.Ticker(yahoo_ticker)
             info = ticker_obj.info
-            
-            stock_info = {
-                'Ticker': ticker,
-                'Company_Name': info.get('longName', ''),
-                'Sector': info.get('sector', ''),
-                'Industry': info.get('industry', ''),
-                'Country': info.get('country', ''),
-                'Exchange': info.get('exchange', ''),
-                'Market_Cap': info.get('marketCap', 0),
-                'IPO_Date': info.get('firstTradeDateEpochUtc', ''),
-                'Website': info.get('website', ''),
-                'Business_Summary': info.get('longBusinessSummary', '')
-            }
-            
-            return stock_info
-            
-        except Exception as e:
-            print(f"Error getting info for {ticker}: {e}")
-            # Return empty info for failed tickers
-            return {
-                'Ticker': ticker,
-                'Company_Name': '',
-                'Sector': '',
-                'Industry': '',
-                'Country': '',
-                'Exchange': '',
-                'Market_Cap': 0,
-                'IPO_Date': '',
-                'Website': '',
-                'Business_Summary': ''
-            }
-    
-    # Process stock info sequentially
-    for ticker in sp500_tickers:
-        stock_info = process_stock_info(ticker)
-        stock_info_list.append(stock_info)
-        
-        # Add longer delay to avoid rate limiting
-        time.sleep(2.0)
-    
-    # Save stock info
-    stock_info_df = pd.DataFrame(stock_info_list)
+            if info:
+                record = default_record.copy()
+                record.update(
+                    Company_Name=info.get('longName', ''),
+                    Sector=info.get('sector', ''),
+                    Industry=info.get('industry', ''),
+                    Country=info.get('country', ''),
+                    Exchange=info.get('exchange', ''),
+                    Market_Cap=info.get('marketCap', 0),
+                    IPO_Date=info.get('firstTradeDateEpochUtc', ''),
+                    Website=info.get('website', ''),
+                    Business_Summary=info.get('longBusinessSummary', ''),
+                )
+                return record
+        except Exception as inner_e:
+            print(f"yfinance fallback failed for {ticker}: {inner_e}")
+
+        sec_record = fetch_stock_info_from_sec(ticker)
+        if any(sec_record.values()):
+            return sec_record
+
+        return default_record
+
+
+def update_stock_info_records(records: list[dict]):
+    """Merge fetched records into existing stock info CSV."""
+    if not records:
+        return
+
+    if os.path.exists(stock_info_filename):
+        stock_info_df = pd.read_csv(stock_info_filename)
+    else:
+        stock_info_df = pd.DataFrame(columns=[
+            'Ticker', 'Company_Name', 'Sector', 'Industry', 'Country',
+            'Exchange', 'Market_Cap', 'IPO_Date', 'Website', 'Business_Summary'
+        ])
+
+    for record in records:
+        ticker_upper = record['Ticker'].upper()
+        mask = stock_info_df['Ticker'].str.upper() == ticker_upper if not stock_info_df.empty else pd.Series(dtype=bool)
+        if not stock_info_df.empty and mask.any():
+            stock_info_df.loc[mask, record.keys()] = record
+        else:
+            stock_info_df = pd.concat([stock_info_df, pd.DataFrame([record])], ignore_index=True)
+
     stock_info_df.to_csv(stock_info_filename, index=False)
-    print(f"Stock information saved to {stock_info_filename}")
-    
-    return stock_info_df
+    print(f"Updated stock information saved to {stock_info_filename}")
+
+
+def download_stock_info():
+    """Download stock information for all S&P 500 stocks."""
+    sp500_tickers = get_sp500_tickers()
+    records = []
+
+    print("Downloading stock information...")
+
+    for ticker in sp500_tickers:
+        records.append(fetch_stock_info_record(ticker))
+        time.sleep(2.0)
+
+    update_stock_info_records(records)
+    return pd.DataFrame(records)
+
+
+def update_stock_info_for_list(target_tickers: list[str]):
+    """Fetch and update stock info for a specific list of tickers."""
+    if not target_tickers:
+        print("No target tickers specified for stock info update.")
+        return
+
+    records = []
+    for ticker in target_tickers:
+        records.append(fetch_stock_info_record(ticker))
+        time.sleep(1.0)
+
+    update_stock_info_records(records)
 
 # Function to get quarterly financial data with actual earnings dates
 def get_quarterly_financials_with_dates(ticker):

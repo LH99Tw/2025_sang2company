@@ -21,29 +21,56 @@ database_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 filename = os.path.join(database_path, "sp500_data.csv")
 
 # ------------------ Helper Functions ------------------
+TICKER_ALIASES = {
+    'BRK-B': ['BRK.B', 'BRKB', 'BRK B'],
+    'BRK.B': ['BRK-B', 'BRKB', 'BRK B'],
+    'IBKR': ['IBKR', 'IBKR-A'],
+    'PSKY': ['PSNY', 'PSKY'],
+}
+
+
+def _generate_ticker_variations(raw_ticker: str) -> set[str]:
+    """Generate possible variations for SEC lookup."""
+    upper = raw_ticker.upper().strip()
+    variations = {upper}
+
+    if '-' in upper:
+        variations.add(upper.replace('-', '.'))
+        variations.add(upper.replace('-', ''))
+    if '.' in upper:
+        variations.add(upper.replace('.', '-'))
+        variations.add(upper.replace('.', ''))
+
+    variations.update(TICKER_ALIASES.get(upper, []))
+    variations = {v.upper() for v in variations if v}
+    return variations
+
+
 def get_company_cik(ticker: str) -> Optional[str]:
     """Get the CIK for a given ticker using local company_tickers.json file"""
     try:
         # Load local company_tickers.json file
         company_tickers_path = os.path.join(database_path, "company_tickers.json")
-        
+
         if not os.path.exists(company_tickers_path):
             print(f"Company tickers file not found at {company_tickers_path}")
             return None
-            
+
         with open(company_tickers_path, 'r') as f:
             companies = json.load(f)
-        
-        # Search for the ticker in the loaded data
+
+        variations = _generate_ticker_variations(ticker)
+
         for company_data in companies.values():
-            if company_data.get('ticker', '').upper() == ticker.upper():
+            listed_ticker = company_data.get('ticker', '').upper()
+            if listed_ticker in variations:
                 cik = str(company_data.get('cik_str')).zfill(10)
-                print(f"Found CIK {cik} for ticker {ticker}")
+                print(f"Found CIK {cik} for ticker {ticker} (matched {listed_ticker})")
                 return cik
-        
+
         print(f"No CIK found for ticker {ticker} in local file")
         return None
-        
+
     except Exception as e:
         print(f"Error getting CIK for {ticker}: {e}")
         return None
@@ -223,6 +250,49 @@ def fill_financial_data_sec_for_ticker(ticker, df_ticker):
         print(f"Error processing SEC financial data for {ticker}: {e}")
         return False
 
+def fill_financial_data_sec_for_list(target_tickers: list[str]):
+    """Fill financial data for a specific list of tickers."""
+    try:
+        if not target_tickers:
+            print("No target tickers provided.")
+            return
+
+        df = pd.read_csv(filename, parse_dates=['Date'])
+        if df.empty:
+            print("CSV file is empty!")
+            return
+
+        normalized_targets = [ticker.upper().strip() for ticker in target_tickers]
+        print(f"Processing target tickers: {', '.join(normalized_targets)}")
+
+        successful_fills = 0
+        failed_fills = 0
+
+        for raw_ticker in normalized_targets:
+            df_ticker = df[df['Ticker'].str.upper() == raw_ticker].copy()
+
+            if df_ticker.empty:
+                print(f"Ticker {raw_ticker} not found in source CSV. Skipping.")
+                failed_fills += 1
+                continue
+
+            if fill_financial_data_sec_for_ticker(raw_ticker, df_ticker):
+                df.loc[df['Ticker'].str.upper() == raw_ticker, df_ticker.columns] = df_ticker.values
+                successful_fills += 1
+            else:
+                failed_fills += 1
+
+            time.sleep(0.5)
+            gc.collect()
+
+        print("Saving updated data...")
+        df.to_csv(filename, index=False)
+        print(f"Completed SEC fills for target list. Success: {successful_fills}, Failed: {failed_fills}")
+
+    except Exception as e:
+        print(f"Error in fill_financial_data_sec_for_list: {e}")
+
+
 def fill_all_financial_data_sec():
     """Fill financial data for all tickers in the CSV file using SEC EDGAR"""
     try:
@@ -277,5 +347,6 @@ def fill_all_financial_data_sec():
 
 if __name__ == "__main__":
     print("Starting SEC EDGAR financial data filling process...")
-    fill_all_financial_data_sec()
+    target_tickers = ["APP", "BRK-B", "EME", "HOOD", "IBKR", "PSKY"]
+    fill_financial_data_sec_for_list(target_tickers)
     print("Process completed!")

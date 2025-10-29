@@ -20,6 +20,7 @@ import secrets
 import random
 import textwrap
 import ast
+import math
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 import uuid
@@ -66,6 +67,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'korean-qwen:latest')
 
+# 허용 식별자: 트랜스파일러 전역 + 입력 별칭 + 안전 내장 함수
 ALPHA_ALLOWED_IDENTIFIERS = set(ALPHA_GLOBALS.keys()) | {
     'open',
     'high',
@@ -78,6 +80,14 @@ ALPHA_ALLOWED_IDENTIFIERS = set(ALPHA_GLOBALS.keys()) | {
     'data',
     'meta',
 }
+
+# 내장 허용 함수(abs, min, max, pow, round 등)을 허용 집합에 병합
+try:
+    _builtins_map = ALPHA_GLOBALS.get('__builtins__', {})
+    if isinstance(_builtins_map, dict):
+        ALPHA_ALLOWED_IDENTIFIERS |= set(_builtins_map.keys())
+except Exception:
+    pass
 
 # 흔히 안내할 함수 목록 (문서화용)
 DOCUMENTED_ALPHA_FUNCTIONS = [
@@ -94,12 +104,24 @@ DOCUMENTED_ALPHA_FUNCTIONS = [
     'scale',
     'sma',
     'stddev',
+    'ts_mean',
+    'ts_stddev',
+    'ts_var',
+    'ts_zscore',
+    'zscore',
+    'ts_mean_abs',
     'ts_argmax',
     'ts_argmin',
     'ts_max',
     'ts_min',
     'ts_rank',
     'ts_sum',
+    # 흔히 사용하는 안전 내장(표현식 내 사용 안내용)
+    'abs',
+    'min',
+    'max',
+    'pow',
+    'round',
     'sign',
     'log',
     'exp',
@@ -120,11 +142,16 @@ ALPHA_FUNCTION_ALIASES: Dict[str, str] = {
     'var': 'ts_var',
     'variance': 'ts_var',
     'corr': 'correlation',
+    'ts_corr': 'correlation',
+    'ts_rolling_corr': 'correlation',
     'cov': 'covariance',
     'lwma': 'decay_linear',       # linear weighted moving average 표기
     'ema': 'sma',                 # 단순 치환(EMA 미구현 → SMA로 완화)
     'ts_amin': 'ts_min',
     'ts_amax': 'ts_max',
+    'ts_rolling_stddev': 'ts_stddev',
+    'ts_rolling_sum': 'ts_sum',
+    'ts_rolling_window': 'floor_window',
     # 입력 별칭
     'vol': 'volume',
     'amt': 'amount',
@@ -725,6 +752,18 @@ def apply_expression_aliases(expression: str) -> str:
     normalized = expression
     for alias, target in ALPHA_FUNCTION_ALIASES.items():
         normalized = re.sub(rf"\b{re.escape(alias)}\b", target, normalized)
+
+    # 특수 패턴: advN → adv(close, volume, N)
+    # - 함수 호출 형태가 아니라 토큰으로 쓰인 경우를 보정
+    def _advn_repl(match: re.Match) -> str:
+        n = match.group(1)
+        # 괄호가 바로 뒤따르면 원형 유지(adv40(...)) → 사용자가 명시 인자를 제공했다고 가정
+        tail = match.group(2) or ''
+        if tail == '(':
+            return f"adv{n}("
+        return f"adv(close, volume, {n})"
+
+    normalized = re.sub(r"\badv(\d+)(\()?", _advn_repl, normalized)
     return normalized
 
 
@@ -849,6 +888,278 @@ def run_mcts_search(goal: str, *, simulations: int = 6) -> Tuple[List[Dict[str, 
     for index, candidate in enumerate(candidates, start=1):
         candidate['id'] = f'candidate_{index}'
         candidate['name'] = candidate['name'] or f'Alpha Candidate {index}'
+
+    return candidates, trace, last_provider
+
+
+def run_mcts_search_uct(
+    goal: str,
+    *,
+    simulations: int = 32,
+    c: float = math.sqrt(2.0),
+    max_depth: int = 3,
+    branch_factor: int = 3,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], str]:
+    """
+    UCT(UCB1) 기반의 간단한 MCTS:
+    - depth 0: 주제 토픽 노드 (예: volatility, momentum, reversal, liquidity, correlation)
+    - depth 1: 알파 표현식 후보(leaf) 노드
+    선택: UCB1 = Q + c * sqrt(ln(N)/n)
+    확장: 미시도 토픽/후보를 하나 추가
+    시뮬레이션: 후보 점수(heuristic score_alpha_expression)
+    역전파: 경로상 방문/보상 업데이트
+    반환: 상위 후보 리스트, 탐색 흔적(trace), 마지막 LLM 제공자
+    """
+    Topic = str
+
+    topics: List[Topic] = [
+        'volatility',
+        'momentum',
+        'reversal',
+        'liquidity',
+        'correlation',
+    ]
+
+    class Node:
+        __slots__ = (
+            'parent', 'children', 'visits', 'total_reward', 'action', 'depth',
+            'topic', 'expression', 'rationale', 'score'
+        )
+        def __init__(self, parent=None, action: Optional[str]=None, depth:int=0):
+            self.parent: Optional['Node'] = parent
+            self.children: List['Node'] = []
+            self.visits: int = 0
+            self.total_reward: float = 0.0
+            self.action = action  # topic name or 'candidate_k'
+            self.depth = depth
+            # payload
+            self.topic: Optional[str] = None
+            self.expression: Optional[str] = None
+            self.rationale: Optional[str] = None
+            self.score: Optional[float] = None
+
+        def q_value(self) -> float:
+            return (self.total_reward / self.visits) if self.visits > 0 else 0.0
+
+        def ucb(self, parent_visits: int, c_: float) -> float:
+            if self.visits == 0:
+                return float('inf')
+            return self.q_value() + c_ * math.sqrt(max(1.0, math.log(parent_visits)) / self.visits)
+
+        def is_fully_expanded(self) -> bool:
+            if self.depth == 0:
+                return len(self.children) >= len(topics)
+            if self.depth == 1:
+                return len(self.children) >= branch_factor
+            return True
+
+        def is_terminal(self) -> bool:
+            return self.depth >= max_depth
+
+        def path(self) -> List[str]:
+            cur, p = self, []
+            while cur is not None:
+                if cur.action:
+                    p.append(str(cur.action))
+                cur = cur.parent
+            return list(reversed(p)) or ['root']
+
+    root = Node(parent=None, action='root', depth=0)
+    trace: List[Dict[str, Any]] = []
+    last_provider = 'unknown'
+
+    def expand_topic(parent: Node) -> Optional[Node]:
+        tried = {child.action for child in parent.children}
+        for t in topics:
+            if t not in tried:
+                child = Node(parent=parent, action=t, depth=1)
+                child.topic = t
+                parent.children.append(child)
+                return child
+        return None
+
+    def expand_candidate(parent: Node) -> Optional[Node]:
+        # 요청: goal + topic 힌트로 LLM에 후보 생성
+        topic_hint = parent.topic or 'general'
+        system_prompt = textwrap.dedent(
+            f"""
+            당신은 퀀트 리서치 파트너입니다. 아래 토픽에 초점을 맞춘 WorldQuant 스타일 알파 수식을 JSON으로 1개 제안하세요.
+            토픽: {topic_hint}
+            사용 가능 함수: {', '.join(DOCUMENTED_ALPHA_FUNCTIONS)}
+            허용 입력: {', '.join(ALPHA_ALLOWED_INPUTS)}
+            JSON 스키마: {{"name": "...", "expression": "...", "rationale": "..."}}
+            수식만 간결하게 작성하세요.
+            """
+        ).strip()
+        user_prompt = textwrap.dedent(
+            f"""
+            사용자 목표: {goal}
+            토픽 '{topic_hint}'에 맞는 새로운 알파 수식을 1개만 JSON으로 제안하세요.
+            """
+        ).strip()
+        llm_messages = [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ]
+        llm_output, provider = call_local_llm(llm_messages, temperature=0.25)
+        nonlocal last_provider
+        last_provider = provider
+        expression, rationale = parse_llm_alpha_payload(llm_output)
+        expression = apply_expression_aliases(expression)
+
+        # 후보 노드 생성 (leaf)
+        child = Node(parent=parent, action=f"candidate_{len(parent.children)+1}", depth=2)
+        child.topic = topic_hint
+        child.expression = expression
+        child.rationale = rationale
+        parent.children.append(child)
+
+        # 평가(시뮬레이션)
+        if not expression:
+            score = 0.0
+            reason = 'empty_expression'
+        else:
+            unsupported = find_unsupported_identifiers(expression)
+            if unsupported:
+                score = 0.0
+                reason = f"unsupported: {', '.join(unsupported)}"
+            else:
+                score = score_alpha_expression(expression, rationale or '', goal)
+                reason = ''
+
+        child.score = score
+        trace.append({
+            'path': child.path(),
+            'raw_response': llm_output,
+            'expression': expression,
+            'score': score,
+            'reason': reason,
+        })
+        return child
+
+    def expand_refinement(parent: Node) -> Optional[Node]:
+        # parent: depth-2 node with an expression; create a refined variant
+        base_expr = parent.expression or ''
+        if not base_expr:
+            # no expression to refine
+            child = Node(parent=parent, action=f"ref_{len(parent.children)+1}", depth=3)
+            parent.children.append(child)
+            child.score = 0.0
+            trace.append({
+                'path': child.path(),
+                'raw_response': '',
+                'expression': '',
+                'score': 0.0,
+                'reason': 'no_base_expression',
+            })
+            return child
+
+        system_prompt = textwrap.dedent(
+            f"""
+            당신은 퀀트 리서치 파트너입니다. 주어진 알파 수식을 소폭 개선하여 변형안을 1개 제안하세요.
+            - window/period 파라미터의 미세 조정, rank/scale 조합, correlation 윈도우 수정 등 경미한 수정을 우선합니다.
+            - 사용 가능 함수: {', '.join(DOCUMENTED_ALPHA_FUNCTIONS)}
+            - 허용 입력: {', '.join(ALPHA_ALLOWED_INPUTS)}
+            JSON 스키마: {{"expression": "...", "rationale": "..."}}
+            """
+        ).strip()
+        user_prompt = textwrap.dedent(
+            f"""
+            원본 수식:
+            {base_expr}
+            이 수식을 약간 개선한 새로운 변형을 JSON으로 1개만 제안하세요.
+            """
+        ).strip()
+
+        llm_messages = [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ]
+        llm_output, provider = call_local_llm(llm_messages, temperature=0.2)
+        nonlocal last_provider
+        last_provider = provider
+
+        expression, rationale = parse_llm_alpha_payload(llm_output)
+        expression = apply_expression_aliases(expression)
+
+        child = Node(parent=parent, action=f"ref_{len(parent.children)+1}", depth=3)
+        child.topic = parent.topic
+        child.expression = expression or ''
+        child.rationale = rationale or ''
+        parent.children.append(child)
+
+        if not expression:
+            score = 0.0
+            reason = 'empty_refinement'
+        else:
+            unsupported = find_unsupported_identifiers(expression)
+            if unsupported:
+                score = 0.0
+                reason = f"unsupported: {', '.join(unsupported)}"
+            else:
+                score = score_alpha_expression(expression, rationale or '', goal)
+                reason = ''
+        child.score = score
+        trace.append({
+            'path': child.path(),
+            'raw_response': llm_output,
+            'expression': expression,
+            'score': score,
+            'reason': reason,
+        })
+        return child
+
+    for _ in range(max(1, int(simulations))):
+        node = root
+        # Selection
+        while node.is_fully_expanded() and not node.is_terminal():
+            if not node.children:
+                break
+            parent_visits = max(1, node.visits)
+            node = max(node.children, key=lambda ch: ch.ucb(parent_visits, c))
+
+        # Expansion
+        if not node.is_terminal():
+            if node.depth == 0:
+                node = expand_topic(node) or node
+            elif node.depth == 1:
+                node = expand_candidate(node) or node
+            elif node.depth == 2:
+                node = expand_refinement(node) or node
+
+        # Simulation is embedded in expand_candidate (score assigned to leaf).
+        # If terminal without score, skip backprop.
+        reward = node.score if node.score is not None else 0.0
+
+        # Backpropagation
+        cur = node
+        while cur is not None:
+            cur.visits += 1
+            cur.total_reward += reward
+            cur = cur.parent
+
+    # 수집: 모든 leaf 후보 정렬
+    leaves: List[Node] = []
+    def collect(n: Node):
+        if not n.children:
+            if n.expression:
+                leaves.append(n)
+            return
+        for ch in n.children:
+            collect(ch)
+    collect(root)
+    leaves.sort(key=lambda n: (n.score or 0.0), reverse=True)
+
+    candidates: List[Dict[str, Any]] = []
+    for idx, leaf in enumerate(leaves, start=1):
+        candidates.append({
+            'id': f'candidate_{idx}',
+            'name': f'{leaf.topic.title() if leaf.topic else "Alpha"} Candidate {idx}',
+            'expression': leaf.expression or '',
+            'rationale': leaf.rationale or '',
+            'score': float(leaf.score or 0.0),
+            'path': leaf.path(),
+        })
 
     return candidates, trace, last_provider
 
@@ -2352,7 +2663,19 @@ def incubator_chat():
         if intent == 'off_topic':
             reply = "이 인큐베이터는 알파 수식과 플랫폼 관련 문의에만 답변합니다. 전략·지표·알파 생성과 관련된 질문을 해주세요."
         elif intent == 'generate':
-            candidates, trace, llm_provider = run_mcts_search(message)
+            # 항상 UCT 사용 (필수)
+            sims = int(payload.get('simulations') or payload.get('sims') or 24)
+            ucb_c = float(payload.get('ucb_c') or math.sqrt(2.0))
+            max_depth = int(payload.get('max_depth') or 3)
+            branch_factor = int(payload.get('branch_factor') or 3)
+
+            candidates, trace, llm_provider = run_mcts_search_uct(
+                message,
+                simulations=sims,
+                c=ucb_c,
+                max_depth=max_depth,
+                branch_factor=branch_factor,
+            )
             if llm_provider != 'ollama':
                 warnings.append("로컬 Ollama LLM이 비활성화되어 휴리스틱 응답을 사용했습니다. `ollama serve` 상태를 확인하세요.")
             unsupported_reasons = sorted(

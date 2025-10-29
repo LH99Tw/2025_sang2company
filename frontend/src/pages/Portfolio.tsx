@@ -409,7 +409,7 @@ export const Portfolio: React.FC = () => {
   const [factorList, setFactorList] = useState<AlphaFactorMetadata[]>([]);
   const [selectedFactors, setSelectedFactors] = useState<string[]>([]);
   const [factorWeights, setFactorWeights] = useState<Record<string, number>>({});
-  const [asOfDate, setAsOfDate] = useState<Dayjs | null>(dayjs());
+  const [asOfDate, setAsOfDate] = useState<Dayjs | null>(null);
   const [selectionMode, setSelectionMode] = useState<'count' | 'percentage'>('count');
   const [topCount, setTopCount] = useState<number>(10);
   const [topPercentage, setTopPercentage] = useState<number>(10);

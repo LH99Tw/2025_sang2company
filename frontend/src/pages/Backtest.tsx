@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import styled from 'styled-components';
+import styled, { createGlobalStyle } from 'styled-components';
 import { GlassCard } from '../components/common/GlassCard';
 import { GlassButton } from '../components/common/GlassButton';
 import { GlassInput } from '../components/common/GlassInput';
-import { Select, DatePicker, message, Progress, Tag } from 'antd';
+import { Select, DatePicker, message, Progress } from 'antd';
 import { PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { theme } from '../styles/theme';
 import { runBacktest, getBacktestStatus, fetchUserAlphas } from '../services/api';
@@ -21,6 +21,8 @@ import {
 
 const { RangePicker } = DatePicker;
 const BACKTEST_TASK_KEY = 'backtestTaskId';
+const RANGE_DROPDOWN_CLASS = 'backtest-picker-dropdown';
+const SELECT_DROPDOWN_CLASS = 'backtest-select-dropdown';
 
 type FactorOption = { label: string; value: string };
 
@@ -83,6 +85,7 @@ const StyledSelect = styled(Select)`
     padding: 0 ${theme.spacing.sm} !important;
     display: flex !important;
     align-items: center !important;
+    transition: ${theme.transitions.normal};
   }
 
   .ant-select-selection-item {
@@ -98,6 +101,41 @@ const StyledSelect = styled(Select)`
 
   .ant-select-selection-overflow {
     align-items: center;
+  }
+
+  .ant-select-arrow {
+    color: ${theme.colors.accentPrimary};
+  }
+
+  .ant-select-selector:hover,
+  &.ant-select-focused .ant-select-selector,
+  &.ant-select-open .ant-select-selector {
+    border-color: ${theme.colors.accentPrimary} !important;
+    box-shadow: 0 0 0 1px ${theme.colors.accentPrimary}33;
+  }
+
+  .ant-select-item-option-active {
+    background: ${theme.colors.accentPrimary}12 !important;
+    color: ${theme.colors.textPrimary} !important;
+  }
+
+  .ant-select-item-option-selected {
+    background: ${theme.colors.accentPrimary}22 !important;
+    color: ${theme.colors.textPrimary} !important;
+  }
+
+  &.ant-select-multiple {
+    .ant-select-selection-item {
+      background: ${theme.colors.accentPrimary}22 !important;
+      border: 1px solid ${theme.colors.accentGold}55 !important;
+      border-radius: 6px !important;
+      color: ${theme.colors.textPrimary} !important;
+      padding: 0 ${theme.spacing.xs} !important;
+    }
+
+    .ant-select-selection-item-remove {
+      color: ${theme.colors.textPrimary}99;
+    }
   }
 `;
 
@@ -120,7 +158,59 @@ const StyledRangePicker = styled(RangePicker)`
   }
 
   .ant-picker-suffix {
-    color: ${theme.colors.textSecondary};
+    color: ${theme.colors.accentPrimary};
+  }
+
+  &:hover,
+  &.ant-picker-focused {
+    border-color: ${theme.colors.accentPrimary} !important;
+    box-shadow: 0 0 0 1px ${theme.colors.accentPrimary}33;
+  }
+`;
+
+const BacktestCalendarStyles = createGlobalStyle`
+  .${RANGE_DROPDOWN_CLASS} .ant-picker-cell-in-view.ant-picker-cell-selected .ant-picker-cell-inner,
+  .${RANGE_DROPDOWN_CLASS} .ant-picker-cell-in-view.ant-picker-cell-range-start .ant-picker-cell-inner,
+  .${RANGE_DROPDOWN_CLASS} .ant-picker-cell-in-view.ant-picker-cell-range-end .ant-picker-cell-inner {
+    background: ${theme.colors.accentPrimary};
+    color: ${theme.colors.backgroundDark};
+  }
+
+  .${RANGE_DROPDOWN_CLASS} .ant-picker-cell-in-view.ant-picker-cell-in-range .ant-picker-cell-inner,
+  .${RANGE_DROPDOWN_CLASS} .ant-picker-cell-in-view.ant-picker-cell-range-hover .ant-picker-cell-inner {
+    background: ${theme.colors.accentPrimary}22;
+  }
+
+  .${RANGE_DROPDOWN_CLASS} .ant-picker-cell-in-view.ant-picker-cell-today .ant-picker-cell-inner::before {
+    border-color: ${theme.colors.accentGold};
+  }
+
+  .${RANGE_DROPDOWN_CLASS} .ant-picker-header button,
+  .${RANGE_DROPDOWN_CLASS} .ant-picker-year-btn,
+  .${RANGE_DROPDOWN_CLASS} .ant-picker-month-btn {
+    color: ${theme.colors.textPrimary};
+  }
+
+  .${RANGE_DROPDOWN_CLASS} .ant-picker-range-arrow::before {
+    background: ${theme.colors.accentPrimary};
+  }
+`;
+
+const BacktestSelectStyles = createGlobalStyle`
+  .${SELECT_DROPDOWN_CLASS} .ant-select-item-option-active {
+    background: ${theme.colors.accentPrimary}12 !important;
+    color: ${theme.colors.textPrimary} !important;
+  }
+
+  .${SELECT_DROPDOWN_CLASS} .ant-select-item-option-selected {
+    background: ${theme.colors.accentPrimary}22 !important;
+    color: ${theme.colors.textPrimary} !important;
+    font-weight: 600;
+  }
+
+  .${SELECT_DROPDOWN_CLASS} .ant-select-item-option-active .ant-select-item-option-content,
+  .${SELECT_DROPDOWN_CLASS} .ant-select-item-option-selected .ant-select-item-option-content {
+    color: ${theme.colors.textPrimary} !important;
   }
 `;
 
@@ -181,6 +271,50 @@ const StatusTitle = styled.h3`
 const StatusMeta = styled.span`
   color: ${theme.colors.textSecondary};
   font-size: ${theme.typography.fontSize.caption};
+`;
+
+const StatusBadge = styled.span<{ $variant: 'idle' | 'running' | 'completed' | 'failed' }>`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: ${theme.typography.fontSize.caption};
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid
+    ${({ $variant }) => {
+      switch ($variant) {
+        case 'completed':
+          return `${theme.colors.accentGold}88`;
+        case 'running':
+          return `${theme.colors.accentPrimary}88`;
+        case 'failed':
+          return `${theme.colors.error}aa`;
+        default:
+          return `${theme.colors.liquidGlassBorder}`;
+      }
+    }};
+  color: ${({ $variant }) => {
+    switch ($variant) {
+      case 'failed':
+        return theme.colors.error;
+      default:
+        return theme.colors.textPrimary;
+    }
+  }};
+  background: ${({ $variant }) => {
+    switch ($variant) {
+      case 'completed':
+        return `${theme.colors.accentPrimary}22`;
+      case 'running':
+        return `${theme.colors.accentPrimary}12`;
+      case 'failed':
+        return `${theme.colors.error}22`;
+      default:
+        return `${theme.colors.liquidGlass}`;
+    }
+  }};
 `;
 
 const LogList = styled.ul`
@@ -271,25 +405,6 @@ const CompactInput = styled(GlassInput)`
   }
 `;
 
-const CardHeader = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: ${theme.spacing.sm};
-`;
-
-const CardTitle = styled.h2`
-  margin: 0;
-  font-size: ${theme.typography.fontSize.h4};
-  color: ${theme.colors.textPrimary};
-  font-weight: 600;
-`;
-
-const CardSubtitle = styled.span`
-  color: ${theme.colors.textSecondary};
-  font-size: ${theme.typography.fontSize.caption};
-`;
-
 const ResultsWrapper = styled.div`
   display: flex;
   flex-direction: column;
@@ -354,14 +469,21 @@ const BacktestPage: React.FC = () => {
   }, []);
 
   const groupedOptions: OptionGroup[] = useMemo(() => {
-    const groups: OptionGroup[] = [];
-    if (alphaOptions.shared.length) {
-      groups.push({ label: `공용 알파 (${alphaOptions.shared.length})`, options: alphaOptions.shared });
+    if (!alphaOptions.shared.length && !alphaOptions.private.length) {
+      return [];
     }
-    if (alphaOptions.private.length) {
-      groups.push({ label: `개인 알파 (${alphaOptions.private.length})`, options: alphaOptions.private });
-    }
-    return groups.length ? groups : [{ label: '사용 가능한 알파 없음', options: [] }];
+    return [
+      ...(
+        alphaOptions.shared.length
+          ? [{ label: `공용 알파 (${alphaOptions.shared.length})`, options: alphaOptions.shared }]
+          : []
+      ),
+      ...(
+        alphaOptions.private.length
+          ? [{ label: `개인 알파 (${alphaOptions.private.length})`, options: alphaOptions.private }]
+          : []
+      ),
+    ];
   }, [alphaOptions]);
 
   const stopPolling = () => {
@@ -452,12 +574,10 @@ const BacktestPage: React.FC = () => {
 
   return (
     <PageWrapper>
+      <BacktestCalendarStyles />
+      <BacktestSelectStyles />
       <BacktestContainer>
         <ControlCard>
-          <CardHeader>
-            <CardTitle>전략 설정</CardTitle>
-            <CardSubtitle>필수 파라미터를 입력한 뒤 백테스트를 실행하세요.</CardSubtitle>
-          </CardHeader>
           <FormGrid>
             <Field>
               <Label>알파 팩터</Label>
@@ -466,6 +586,7 @@ const BacktestPage: React.FC = () => {
                 placeholder="알파 팩터 선택"
                 value={params.factors}
                 loading={optionsLoading}
+                dropdownClassName={SELECT_DROPDOWN_CLASS}
                 optionFilterProp="label"
                 filterOption={(input, option) => (option?.label ?? '').toLowerCase().includes(input.toLowerCase())}
                 notFoundContent={optionsLoading ? '알파 목록을 불러오는 중...' : '사용 가능한 알파가 없습니다'}
@@ -477,6 +598,7 @@ const BacktestPage: React.FC = () => {
             <Field>
               <Label>기간</Label>
               <StyledRangePicker
+                dropdownClassName={RANGE_DROPDOWN_CLASS}
                 value={[dayjs(params.start_date), dayjs(params.end_date)]}
                 onChange={(dates) => {
                   if (dates) {
@@ -494,6 +616,7 @@ const BacktestPage: React.FC = () => {
               <Label>리밸런싱 주기</Label>
               <StyledSelect
                 value={params.rebalancing_frequency}
+                dropdownClassName={SELECT_DROPDOWN_CLASS}
                 onChange={(value) => setParams({ ...params, rebalancing_frequency: value as 'daily' | 'weekly' | 'monthly' | 'quarterly' })}
                 options={[
                   { value: 'daily', label: '일간' },
@@ -561,13 +684,13 @@ const BacktestPage: React.FC = () => {
         </ControlCard>
 
         <StatusCard>
-          <StatusHeader>
-            <StatusTitle>백테스트 진행 상태</StatusTitle>
+            <StatusHeader>
+              <StatusTitle>백테스트 진행 상태</StatusTitle>
               <StatusMeta>
-                {statusInfo?.status === 'completed' && <Tag color="success">완료</Tag>}
-                {statusInfo?.status === 'failed' && <Tag color="error">실패</Tag>}
-                {statusInfo?.status === 'running' && <Tag color="processing">진행 중</Tag>}
-                {!statusInfo && <Tag>대기 중</Tag>}
+                {statusInfo?.status === 'completed' && <StatusBadge $variant="completed">완료</StatusBadge>}
+                {statusInfo?.status === 'failed' && <StatusBadge $variant="failed">실패</StatusBadge>}
+                {statusInfo?.status === 'running' && <StatusBadge $variant="running">진행 중</StatusBadge>}
+                {!statusInfo && <StatusBadge $variant="idle">대기 중</StatusBadge>}
               </StatusMeta>
             </StatusHeader>
 

@@ -108,6 +108,29 @@ DOCUMENTED_ALPHA_FUNCTIONS = [
 
 ALPHA_ALLOWED_INPUTS = ['open', 'high', 'low', 'close', 'volume', 'amount', 'returns', 'vwap']
 
+# LLM이 자주 생성하는 함수/식별자 별칭을 표준 함수명으로 치환하기 위한 매핑
+# - 정규화 대상은 함수명/입력명 모두 포함(단어 경계 기준으로 안전 치환)
+# - 실제 계산은 alphas.transpiler.ALPHA_GLOBALS 내 구현을 따릅니다.
+ALPHA_FUNCTION_ALIASES: Dict[str, str] = {
+    # 함수 표기 변형/오타
+    'ts_avg': 'ts_mean',          # rolling average → 통일
+    'rolling_mean': 'ts_mean',
+    'rolling_std': 'ts_stddev',
+    'stdev': 'stddev',
+    'var': 'ts_var',
+    'variance': 'ts_var',
+    'corr': 'correlation',
+    'cov': 'covariance',
+    'lwma': 'decay_linear',       # linear weighted moving average 표기
+    'ema': 'sma',                 # 단순 치환(EMA 미구현 → SMA로 완화)
+    'ts_amin': 'ts_min',
+    'ts_amax': 'ts_max',
+    # 입력 별칭
+    'vol': 'volume',
+    'amt': 'amount',
+    'ret': 'returns',
+}
+
 
 def find_unsupported_identifiers(expression: str) -> List[str]:
     """표현식에 포함된 허용되지 않은 식별자를 찾아 목록으로 반환합니다."""

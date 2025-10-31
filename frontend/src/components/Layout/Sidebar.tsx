@@ -286,6 +286,7 @@ export const Sidebar: React.FC = () => {
   const analysisItems = [
     { path: '/backtest', icon: <ExperimentOutlined />, label: '백테스트' },
     { path: '/portfolio', icon: <FundOutlined />, label: '포트폴리오' },
+    { path: '/explorer', icon: <StockOutlined />, label: '종목 탐색' },
   ];
 
   const alphaItems = [

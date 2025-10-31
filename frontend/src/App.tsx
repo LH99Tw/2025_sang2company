@@ -17,6 +17,7 @@ import { About } from './pages/About';
 import MyInvestment from './pages/MyInvestment';
 import Profile from './pages/Profile';
 import { HeatmapDemo } from './pages/HeatmapDemo';
+import { StockExplorer } from './pages/StockExplorer';
 
 import './App.css';
 
@@ -55,6 +56,7 @@ const AppContent: React.FC = () => {
           <Route path="/profile" element={<Profile />} />
           <Route path="/about" element={<About />} />
           <Route path="/heatmap-demo" element={<HeatmapDemo />} />
+          <Route path="/explorer" element={<StockExplorer />} />
         </Routes>
       </Layout>
     </Router>
@@ -67,7 +69,7 @@ const App: React.FC = () => {
       locale={koKR}
       theme={{
         token: {
-          colorPrimary: '#8AB4F8',
+          colorPrimary: '#D4AF37',
           colorBgBase: '#202124',
           colorTextBase: '#E8EAED',
           borderRadius: 12,

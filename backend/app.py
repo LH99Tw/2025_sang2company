@@ -301,6 +301,158 @@ def prepare_alpha_dataset_from_price(ticker_df: pd.DataFrame) -> AlphaDataset:
     return AlphaDataset(alpha_frame)
 
 
+# ------------------------------
+# IC/IC_IR 기반 평가 유틸리티 (MCTS/UCT용)
+# ------------------------------
+
+MCTS_METRIC_WEIGHTS: Dict[str, Any] = {
+    'horizons': {1: 0.4, 5: 0.35, 10: 0.25},
+    'ic_ir': 0.25,
+    'novelty': 0.0,     # UCT에서는 기본 미사용
+    'turnover': 0.0,    # 간단화: 미사용
+    'ic_vol': 0.1,
+    'penalty': 0.1,
+    'coverage_target': 0.6,
+}
+
+
+def _compose_mcts_score(metrics: Dict[str, Any], weights: Dict[str, Any]) -> float:
+    horizon_score = 0.0
+    for h, w in weights.get('horizons', {}).items():
+        horizon_score += float(w) * float(metrics['ic_by_horizon'].get(int(h), 0.0))
+    ic_ir_term = float(weights.get('ic_ir', 0.0)) * float(metrics.get('ic_ir', 0.0))
+    ic_vol_term = float(weights.get('ic_vol', 0.0)) * float(abs(metrics.get('ic_volatility', 0.0)))
+    penalty_term = float(weights.get('penalty', 0.0)) * float(metrics.get('penalty', 0.0))
+    turnover_term = float(weights.get('turnover', 0.0)) * float(metrics.get('turnover', 0.0))
+    novelty_term = float(weights.get('novelty', 0.0)) * float(metrics.get('novelty', 0.0))
+    return horizon_score + ic_ir_term + novelty_term - turnover_term - ic_vol_term - penalty_term
+
+
+def _cross_sectional_ic_series(factor_df: pd.DataFrame, future_ret: pd.DataFrame) -> pd.Series:
+    # 정렬/정합
+    a, b = factor_df.align(future_ret, join='inner', axis=0)
+    a, b = a.align(b, join='inner', axis=1)
+    out = []
+    idx = []
+    for ts in a.index:
+        s1 = a.loc[ts]
+        s2 = b.loc[ts]
+        joined = pd.concat([s1, s2], axis=1).dropna()
+        if joined.shape[0] < 5:
+            out.append(np.nan)
+        else:
+            out.append(joined.iloc[:, 0].corr(joined.iloc[:, 1]))
+        idx.append(ts)
+    return pd.Series(out, index=pd.Index(idx))
+
+
+def _compute_future_returns(close_df: pd.DataFrame, h: int) -> pd.DataFrame:
+    h = int(h)
+    return (close_df.shift(-h) / close_df) - 1.0
+
+
+def _evaluate_expression_ic_metrics(
+    expression: str,
+    df_panel: Dict[str, pd.DataFrame],
+    metric_weights: Optional[Dict[str, Any]] = None,
+) -> Tuple[float, Dict[str, Any]]:
+    """표현식을 패널 데이터에서 평가하여 IC/IC_IR 기반 점수 계산.
+    실패 시 (예외), (0.0, {'error': ...}) 반환.
+    """
+    weights = metric_weights or MCTS_METRIC_WEIGHTS
+    try:
+        # 평가 환경 구성: ALPHA_GLOBALS 재사용
+        locals_env: Dict[str, Any] = {}
+        locals_env['open'] = pd.DataFrame(df_panel['S_DQ_OPEN'])
+        locals_env['high'] = pd.DataFrame(df_panel['S_DQ_HIGH'])
+        locals_env['low'] = pd.DataFrame(df_panel['S_DQ_LOW'])
+        locals_env['close'] = pd.DataFrame(df_panel['S_DQ_CLOSE'])
+        locals_env['volume'] = pd.DataFrame(df_panel['S_DQ_VOLUME'])
+        amount_df = pd.DataFrame(df_panel['S_DQ_AMOUNT'])
+        locals_env['amount'] = amount_df
+        returns_df = pd.DataFrame(df_panel['S_DQ_PCTCHANGE'])
+        locals_env['returns'] = returns_df
+        vwap_df = amount_df / (locals_env['volume'].replace(0, np.nan))
+        vwap_df = vwap_df.fillna(method='ffill').fillna(method='bfill').fillna(0)
+        locals_env['vwap'] = vwap_df
+        locals_env['data'] = None
+        locals_env['meta'] = {}
+
+        expr = apply_expression_aliases(expression or '')
+        if not expr:
+            raise ValueError('empty expression')
+
+        result = eval(expr, ALPHA_GLOBALS, locals_env)  # noqa: S307 - controlled env
+        if isinstance(result, pd.Series):
+            # 단일 시리즈인 경우 열 1개인 프레임으로 변환 후 첫 열 사용
+            factor_df = result.to_frame(result.name or 'factor')
+        elif isinstance(result, pd.DataFrame):
+            factor_df = result
+        else:
+            # numpy 등은 DataFrame으로 변환 시도
+            arr = np.asarray(result)
+            if arr.ndim == 1:
+                factor_df = pd.DataFrame(arr, index=locals_env['close'].index, columns=['factor'])
+            elif arr.ndim == 2:
+                factor_df = pd.DataFrame(arr, index=locals_env['close'].index, columns=locals_env['close'].columns)
+            else:
+                raise ValueError('unsupported result shape')
+
+        # 안전 정리
+        factor_df = factor_df.replace([np.inf, -np.inf], np.nan)
+
+        # IC by horizon
+        close_df = locals_env['close']
+        ic_by_h = {}
+        ic_counts = {}
+        ic_series_collection: List[pd.Series] = []
+        for h, _w in weights.get('horizons', {}).items():
+            fut = _compute_future_returns(close_df, int(h))
+            ic_series = _cross_sectional_ic_series(factor_df, fut)
+            ic_by_h[int(h)] = float(ic_series.mean()) if not ic_series.empty else 0.0
+            ic_counts[int(h)] = int(ic_series.count())
+            if not ic_series.empty:
+                ic_series_collection.append(ic_series.rename(f'h{h}'))
+
+        if ic_series_collection:
+            combined = pd.concat(ic_series_collection, axis=1)
+            combined_mean = combined.mean(axis=1)
+        else:
+            combined_mean = pd.Series(dtype=float)
+
+        ic_vol = float(abs(combined_mean.std(ddof=0))) if not combined_mean.empty else 0.0
+        agg_ic = 0.0
+        for h, w in weights.get('horizons', {}).items():
+            agg_ic += float(w) * float(ic_by_h.get(int(h), 0.0))
+        vol_floor = max(ic_vol, 0.02)
+        ic_ir = float(agg_ic) / float(vol_floor)
+        if not np.isfinite(ic_ir):
+            ic_ir = 0.0
+        ic_ir = float(np.clip(ic_ir, -10.0, 10.0))
+
+        # coverage
+        total = factor_df.size
+        valid = int(np.isfinite(factor_df.values).sum())
+        coverage = float(valid) / float(total) if total > 0 else 0.0
+        penalty = max(0.0, float(weights.get('coverage_target', 0.6)) - coverage)
+
+        metrics = {
+            'ic_by_horizon': ic_by_h,
+            'ic_counts': ic_counts,
+            'ic_aggregate': float(agg_ic),
+            'ic_volatility': float(ic_vol),
+            'ic_ir': float(ic_ir),
+            'turnover': 0.0,
+            'coverage': float(coverage),
+            'penalty': float(penalty),
+            'novelty': 0.0,
+        }
+        composite = _compose_mcts_score(metrics, weights)
+        return float(composite), metrics
+    except Exception as exc:
+        return 0.0, {'error': str(exc)}
+
+
 def calculate_factor_performance(
     merged_data: pd.DataFrame,
     factor_col: str,
@@ -856,7 +1008,10 @@ def run_mcts_search(goal: str, *, simulations: int = 6) -> Tuple[List[Dict[str, 
             })
             continue
 
-        score = score_alpha_expression(expression, rationale, goal)
+        # 우선 실제 IC 기반 점수 시도 (실패 시 휴리스틱 폴백)
+        df_panel = load_real_data_for_ga() or create_minimal_dummy_data()
+        composite, metrics = _evaluate_expression_ic_metrics(expression, df_panel, MCTS_METRIC_WEIGHTS)
+        score = float(composite) if np.isfinite(composite) and composite != 0.0 else score_alpha_expression(expression, rationale, goal)
         candidate = {
             'name': f'Alpha Candidate {iteration}',
             'expression': expression,
@@ -875,6 +1030,7 @@ def run_mcts_search(goal: str, *, simulations: int = 6) -> Tuple[List[Dict[str, 
             'raw_response': llm_output,
             'scored_expression': expression,
             'score': score,
+            'metrics': metrics,
         })
 
         # 중복 수식은 스킵
@@ -1097,7 +1253,10 @@ def run_mcts_search_uct(
                 score = 0.0
                 reason = f"unsupported: {', '.join(unsupported)}"
             else:
-                score = score_alpha_expression(expression, rationale or '', goal)
+                # IC 기반 점수 시도 → 실패 시 휴리스틱 폴백
+                df_panel = load_real_data_for_ga() or create_minimal_dummy_data()
+                composite, metrics = _evaluate_expression_ic_metrics(expression, df_panel, MCTS_METRIC_WEIGHTS)
+                score = float(composite) if np.isfinite(composite) and composite != 0.0 else score_alpha_expression(expression, rationale or '', goal)
                 reason = ''
         child.score = score
         trace.append({
@@ -1106,6 +1265,7 @@ def run_mcts_search_uct(
             'expression': expression,
             'score': score,
             'reason': reason,
+            'metrics': metrics if reason == '' else None,
         })
         return child
 
@@ -1412,6 +1572,332 @@ task_status = {}
 backtest_status: Dict[str, Dict[str, Any]] = {}
 ga_status: Dict[str, Dict[str, Any]] = {}
 incubator_sessions: Dict[str, Dict[str, Any]] = {}
+EXPLORER_FILTERS_FILE = os.path.join(PROJECT_ROOT, 'database', 'explorer_filters.json')
+EXPLORER_SNAPSHOT_PATH = os.path.join(PROJECT_ROOT, 'database', 'explorer_snapshot.csv')
+
+_EXPLORER_CACHE: Dict[str, Any] = {
+    'df': None,
+    'source_mtime': 0.0,
+}
+
+
+def get_explorer_snapshot(force: bool = False) -> pd.DataFrame:
+    """사전 계산된 종목 스냅샷(Ticker, Close, DailyReturn, Vol20 등)을 반환합니다."""
+    price_file = os.path.join(PROJECT_ROOT, 'database', 'sp500_interpolated.csv')
+    info_file = os.path.join(PROJECT_ROOT, 'database', 'sp500_stock_info.csv')
+    if not os.path.exists(price_file) or not os.path.exists(info_file):
+        raise FileNotFoundError('시장 데이터 파일을 찾을 수 없습니다')
+
+    source_mtime = max(os.path.getmtime(price_file), os.path.getmtime(info_file))
+
+    def _is_valid_snapshot(df: Optional[pd.DataFrame]) -> bool:
+        if df is None or df.empty:
+            return False
+        required_cols = {
+            'Ticker',
+            'Date',
+            'Close',
+            'DailyReturn',
+            'Vol20',
+            'Sector',
+            'Market_Cap',
+        }
+        if not required_cols.issubset(set(df.columns)):
+            return False
+        # 최소 종목 수가 너무 적으면 (예: 캐시 파일이 잘못 생성된 경우) 재계산
+        try:
+            if df['Ticker'].nunique() < 50:
+                return False
+        except Exception:
+            return False
+        return True
+
+    if (
+        not force
+        and _EXPLORER_CACHE['df'] is not None
+        and _EXPLORER_CACHE['source_mtime'] == source_mtime
+        and _is_valid_snapshot(_EXPLORER_CACHE['df'])
+    ):
+        return _EXPLORER_CACHE['df'].copy()
+
+    snapshot_mtime = os.path.getmtime(EXPLORER_SNAPSHOT_PATH) if os.path.exists(EXPLORER_SNAPSHOT_PATH) else 0.0
+    if not force and snapshot_mtime >= source_mtime:
+        df = pd.read_csv(EXPLORER_SNAPSHOT_PATH)
+        if _is_valid_snapshot(df):
+            _EXPLORER_CACHE['df'] = df
+            _EXPLORER_CACHE['source_mtime'] = source_mtime
+            return df.copy()
+        # 스냅샷 파일이 손상되었거나 너무 작은 경우 재계산 진행
+        force = True
+
+    # 스냅샷 재계산
+    price_cols = ['Date', 'Ticker', 'Close', 'Volume']
+    df_price = pd.read_csv(price_file, usecols=price_cols, parse_dates=['Date'])
+    df_price['Ticker'] = df_price['Ticker'].astype(str).str.upper()
+    df_price = df_price.sort_values(['Ticker', 'Date']).reset_index(drop=True)
+
+    df_price['PrevClose'] = df_price.groupby('Ticker')['Close'].shift(1)
+    df_price['DailyReturn'] = np.where(
+        df_price['PrevClose'].notna() & (df_price['PrevClose'] != 0),
+        (df_price['Close'] - df_price['PrevClose']) / df_price['PrevClose'],
+        0.0,
+    )
+    df_price['Return'] = df_price.groupby('Ticker')['Close'].pct_change()
+    df_price['Vol20'] = df_price.groupby('Ticker')['Return'].rolling(20).std(ddof=0).reset_index(level=0, drop=True)
+
+    try:
+        last_idx = df_price.groupby('Ticker')['Date'].idxmax()
+        latest_df = df_price.loc[last_idx, ['Ticker', 'Date', 'Close', 'DailyReturn', 'Vol20']].copy()
+    except Exception:
+        latest_date = df_price['Date'].max()
+        latest_df = df_price[df_price['Date'] == latest_date].copy()[['Ticker', 'Date', 'Close', 'DailyReturn', 'Vol20']]
+
+    info_df = pd.read_csv(info_file)
+    info_df['Ticker'] = info_df['Ticker'].astype(str).str.upper()
+    info_df = info_df.rename(columns={
+        'Company_Name': 'Name',
+        'Sector': 'Sector',
+        'Market_Cap': 'Market_Cap'
+    })
+
+    merged = pd.merge(latest_df, info_df[['Ticker', 'Name', 'Sector', 'Market_Cap']], on='Ticker', how='left')
+    merged['Name'] = merged['Name'].fillna(merged['Ticker'])
+    merged['Sector'] = merged['Sector'].fillna('Unknown')
+    merged['Market_Cap'] = pd.to_numeric(merged['Market_Cap'], errors='coerce')
+
+    caps = merged['Market_Cap'].dropna()
+    if not caps.empty:
+        q66 = float(caps.quantile(0.66))
+        q33 = float(caps.quantile(0.33))
+    else:
+        q66 = q33 = 0.0
+
+    def size_bucket_of(x: float) -> str:
+        try:
+            v = float(x)
+            if v >= q66:
+                return 'large'
+            if v >= q33:
+                return 'mid'
+            return 'small'
+        except Exception:
+            return 'small'
+
+    merged['SizeBucket'] = merged['Market_Cap'].apply(size_bucket_of)
+    merged['Date'] = merged['Date'].astype(str)
+
+    os.makedirs(os.path.dirname(EXPLORER_SNAPSHOT_PATH), exist_ok=True)
+    merged.to_csv(EXPLORER_SNAPSHOT_PATH, index=False)
+
+    _EXPLORER_CACHE['df'] = merged
+    _EXPLORER_CACHE['source_mtime'] = source_mtime
+    return merged.copy()
+
+
+@app.route('/api/explorer/list', methods=['GET'])
+def explorer_list():
+    """종목 탐색용 리스트 제공."""
+    try:
+        q = (request.args.get('q') or '').strip()
+        sector_filter = (request.args.get('sector') or '').strip()
+        size_filter = (request.args.get('size') or '').strip()
+        sort_by = (request.args.get('sort_by') or 'change_pct').strip().lower()
+        order = (request.args.get('order') or 'desc').strip().lower()
+        limit = int(request.args.get('limit') or 200)
+        alpha_expression = (request.args.get('alpha_expression') or '').strip()
+        alpha_factor = (request.args.get('alpha_factor') or '').strip()
+        rsi_period = int(request.args.get('rsi_period') or 14)
+        rsi_min = request.args.get('rsi_min')
+        rsi_max = request.args.get('rsi_max')
+        macd_fast = int(request.args.get('macd_fast') or 12)
+        macd_slow = int(request.args.get('macd_slow') or 26)
+        macd_signal = int(request.args.get('macd_signal') or 9)
+        macd_hist_min = request.args.get('macd_hist_min')
+        macd_hist_max = request.args.get('macd_hist_max')
+
+        snapshot = get_explorer_snapshot()
+        merged = snapshot.copy()
+        merged['DailyReturn'] = merged['DailyReturn'].fillna(0.0)
+        merged['Vol20'] = merged['Vol20'].fillna(0.0)
+        merged['AlphaScore'] = np.nan
+
+        if q:
+            q_lower = q.lower()
+            merged = merged[(merged['Ticker'].str.contains(q, case=False)) | (merged['Name'].str.lower().str.contains(q_lower))]
+        if sector_filter:
+            sectors_filter_set = {s.strip().lower() for s in sector_filter.split(',') if s.strip()}
+            if sectors_filter_set:
+                merged = merged[merged['Sector'].str.lower().isin(sectors_filter_set)]
+        if size_filter:
+            sizes_filter_set = {s.strip().lower() for s in size_filter.split(',') if s.strip()}
+            if sizes_filter_set:
+                merged = merged[merged['SizeBucket'].str.lower().isin(sizes_filter_set)]
+
+        alpha_scores = None
+        if alpha_expression or alpha_factor:
+            try:
+                price_file = os.path.join(PROJECT_ROOT, 'database', 'sp500_interpolated.csv')
+                df_price = pd.read_csv(price_file, usecols=['Date', 'Ticker', 'Close', 'Volume'], parse_dates=['Date'])
+                df_price['Ticker'] = df_price['Ticker'].astype(str).str.upper()
+                df_price = df_price.sort_values(['Ticker', 'Date']).reset_index(drop=True)
+
+                close_w = df_price.pivot(index='Date', columns='Ticker', values='Close').sort_index()
+                vol_w = df_price.pivot(index='Date', columns='Ticker', values='Volume').sort_index()
+                amount_w = (close_w * vol_w).astype(float)
+                returns_w = close_w.pct_change(fill_method=None).fillna(0.0)
+                env = {
+                    'open': close_w * 0.995,
+                    'high': close_w * 1.01,
+                    'low': close_w * 0.99,
+                    'close': close_w,
+                    'volume': vol_w,
+                    'amount': amount_w,
+                    'returns': returns_w,
+                    'vwap': amount_w / (vol_w.replace(0, np.nan)).fillna(method='ffill').fillna(method='bfill').fillna(0),
+                    'data': None,
+                    'meta': {},
+                }
+                if alpha_factor:
+                    username = session.get('username')
+                    registry = get_alpha_registry(username)
+                    definition = registry.get(alpha_factor)
+                    if definition is None:
+                        raise ValueError(f'알파 팩터를 찾을 수 없습니다: {alpha_factor}')
+                    meta = getattr(definition, 'metadata', {}) or {}
+                    expr_raw = meta.get('expression') or getattr(definition, 'expression', None) or definition.name
+                    expr = apply_expression_aliases(str(expr_raw))
+                    factor = eval(expr, ALPHA_GLOBALS, env)  # noqa: S307
+                else:
+                    expr = apply_expression_aliases(alpha_expression)
+                    factor = eval(expr, ALPHA_GLOBALS, env)  # noqa: S307
+                if isinstance(factor, pd.Series):
+                    factor = factor.to_frame('factor')
+                if isinstance(factor, pd.DataFrame) and not factor.empty:
+                    latest_date = pd.to_datetime(merged['Date'], errors='coerce').max()
+                    if latest_date in factor.index:
+                        last_row = factor.loc[latest_date]
+                    else:
+                        last_row = factor.iloc[-1]
+                    alpha_scores = last_row.rank(pct=True).to_dict()
+            except Exception as exc:
+                logger.warning("알파 점수 계산 실패: %s", exc)
+
+        if alpha_scores is not None:
+            merged['AlphaScore'] = merged['Ticker'].map(alpha_scores)
+
+        try:
+            price_file = os.path.join(PROJECT_ROOT, 'database', 'sp500_interpolated.csv')
+            df_price = pd.read_csv(price_file, usecols=['Date', 'Ticker', 'Close'], parse_dates=['Date'])
+            df_price['Ticker'] = df_price['Ticker'].astype(str).str.upper()
+            df_price = df_price.sort_values(['Ticker', 'Date']).reset_index(drop=True)
+            close_w = df_price.pivot(index='Date', columns='Ticker', values='Close').sort_index()
+            latest_date = pd.to_datetime(merged['Date'], errors='coerce').max()
+
+            if rsi_min is not None or rsi_max is not None:
+                rsi_min_f = float(rsi_min) if rsi_min is not None else -np.inf
+                rsi_max_f = float(rsi_max) if rsi_max is not None else np.inf
+                delta_px = close_w.diff()
+                up = delta_px.clip(lower=0)
+                down = -delta_px.clip(upper=0)
+                roll_up = up.rolling(rsi_period, min_periods=rsi_period).mean()
+                roll_down = down.rolling(rsi_period, min_periods=rsi_period).mean()
+                rs = roll_up / roll_down.replace(0, np.nan)
+                rsi = 100 - (100 / (1 + rs))
+                rsi_last = rsi.loc[latest_date] if latest_date in rsi.index else rsi.iloc[-1]
+                merged['RSI'] = merged['Ticker'].map(rsi_last.to_dict())
+                merged = merged[(merged['RSI'] >= rsi_min_f) & (merged['RSI'] <= rsi_max_f)]
+
+            if macd_hist_min is not None or macd_hist_max is not None:
+                macd_hist_min_f = float(macd_hist_min) if macd_hist_min is not None else -np.inf
+                macd_hist_max_f = float(macd_hist_max) if macd_hist_max is not None else np.inf
+                ema_fast = close_w.ewm(span=macd_fast, adjust=False).mean()
+                ema_slow = close_w.ewm(span=macd_slow, adjust=False).mean()
+                macd_line = ema_fast - ema_slow
+                signal = macd_line.ewm(span=macd_signal, adjust=False).mean()
+                hist = macd_line - signal
+                hist_last = hist.loc[latest_date] if latest_date in hist.index else hist.iloc[-1]
+                merged['MACD_HIST'] = merged['Ticker'].map(hist_last.to_dict())
+                merged = merged[(merged['MACD_HIST'] >= macd_hist_min_f) & (merged['MACD_HIST'] <= macd_hist_max_f)]
+        except Exception:
+            pass
+
+        sort_key = {
+            'change_pct': 'DailyReturn',
+            'volatility': 'Vol20',
+            'market_cap': 'Market_Cap',
+            'close': 'Close',
+            'alpha_score': 'AlphaScore',
+            'ticker': 'Ticker',
+        }.get(sort_by, 'DailyReturn')
+        ascending = (order == 'asc')
+        merged = merged.sort_values(sort_key, ascending=ascending, na_position='last')
+
+        payload_rows = merged.head(limit).to_dict(orient='records')
+        sectors = sorted(merged['Sector'].dropna().unique().tolist())
+        latest_date = pd.to_datetime(merged['Date'], errors='coerce').max()
+        latest_date_str = latest_date.strftime('%Y-%m-%d') if pd.notna(latest_date) else None
+
+        return jsonify({
+            'success': True,
+            'date': latest_date_str,
+            'total': int(len(merged)),
+            'limit': int(limit),
+            'rows': payload_rows,
+            'sectors': sectors,
+            'size_buckets': ['large', 'mid', 'small'],
+            'csv': 'database/explorer_snapshot.csv',
+        })
+    except Exception as e:
+        logger.error("종목 탐색 리스트 생성 오류: %s", e, exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/stocks', methods=['GET'])
+def list_stocks_simple():
+    """주식 종목 목록 + 기본 지표 제공"""
+    try:
+        q = (request.args.get('q') or '').strip()
+        sector = (request.args.get('sector') or '').strip()
+        order = (request.args.get('order') or 'market_cap').strip().lower()
+        direction = (request.args.get('dir') or 'desc').strip().lower()
+        limit = max(1, int(request.args.get('limit') or 500))
+        offset = max(0, int(request.args.get('offset') or 0))
+
+        snapshot = get_explorer_snapshot()
+        merged = snapshot.copy()
+
+        if q:
+            ql = q.lower()
+            merged = merged[(merged['Ticker'].str.contains(q, case=False)) | (merged['Name'].str.lower().str.contains(ql))]
+        if sector:
+            merged = merged[merged['Sector'].str.lower() == sector.lower()]
+
+        sort_key = {
+            'market_cap': 'Market_Cap',
+            'ticker': 'Ticker',
+            'change_pct': 'DailyReturn',
+            'close': 'Close',
+        }.get(order, 'Market_Cap')
+        ascending = direction == 'asc'
+        merged = merged.sort_values(sort_key, ascending=ascending, na_position='last')
+
+        total = int(len(merged))
+        window = merged.iloc[offset:offset + limit]
+        rows = window.to_dict(orient='records')
+        sectors = sorted(merged['Sector'].dropna().unique().tolist())
+
+        return jsonify({
+            'success': True,
+            'total': total,
+            'offset': offset,
+            'limit': limit,
+            'rows': rows,
+            'sectors': sectors,
+            'size_buckets': ['large', 'mid', 'small'],
+        })
+    except Exception as e:
+        logger.error('종목 목록 생성 오류: %s', e, exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 def get_alpha_registry(username: Optional[str] = None) -> AlphaRegistry:
@@ -2070,6 +2556,7 @@ def run_ga():
         max_survivors = max(1, int(data.get('max_alphas', 10)))
         registry_seed_limit = data.get('registry_seed_limit')
         registry_seed_shuffle = bool(data.get('registry_seed_shuffle', False))
+        metric_weights = data.get('metric_weights')  # 선택적: GA 적합도 가중치
         if registry_seed_limit is not None:
             try:
                 registry_seed_limit = int(registry_seed_limit)
@@ -2109,6 +2596,22 @@ def run_ga():
                 logger.info(f"GA 시작: {task_id}")
                 log_to_status(f"GA 실행 시작: {task_id}")
                 ga_status[task_id]['progress'] = 10
+
+                # 요청된 경우 GA의 metric_weights 갱신 (동적 가중치)
+                if metric_weights and hasattr(ga_system, '_prepare_metric_weights'):
+                    try:
+                        mw = ga_system._prepare_metric_weights(metric_weights)
+                        ga_system.metric_weights = mw
+                        # 평가 기간/미래수익 캐시 재구축
+                        eval_horizons = sorted(set([ga_system.h] + list(mw.get('horizons', {}).keys())))
+                        ga_system.eval_horizons = eval_horizons
+                        ga_system.future_returns_cache = {h: _compute_future_returns(ga_system.close_df, int(h)) for h in eval_horizons}
+                        log_to_status(
+                            f"GA 가중치 갱신: horizons={list(mw.get('horizons', {}).keys())}, "
+                            f"weights={mw}"
+                        )
+                    except Exception as mw_err:
+                        log_to_status(f"가중치 적용 실패: {mw_err}")
 
                 if hasattr(ga_system, 'update_registry'):
                     try:
@@ -2868,6 +3371,46 @@ def get_data_stats():
         
     except Exception as e:
         logger.error(f"데이터 통계 조회 오류: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/explorer/filters', methods=['GET'])
+def list_explorer_filters():
+    try:
+        if not os.path.exists(EXPLORER_FILTERS_FILE):
+            return jsonify({'success': True, 'filters': []})
+        with open(EXPLORER_FILTERS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return jsonify({'success': True, 'filters': data.get('filters', [])})
+    except Exception as e:
+        logger.error('필터 목록 조회 오류: %s', e)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/explorer/filters/save', methods=['POST'])
+def save_explorer_filter():
+    try:
+        payload = request.get_json() or {}
+        name = (payload.get('name') or '').strip()
+        params = payload.get('params') or {}
+        if not name:
+            return jsonify({'error': 'name이 필요합니다'}), 400
+        record = {'name': name, 'params': params, 'saved_at': datetime.now().isoformat()}
+        data = {'filters': []}
+        if os.path.exists(EXPLORER_FILTERS_FILE):
+            try:
+                with open(EXPLORER_FILTERS_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f) or {'filters': []}
+            except Exception:
+                data = {'filters': []}
+        data.setdefault('filters', [])
+        # 같은 이름 업데이트
+        data['filters'] = [f for f in data['filters'] if f.get('name') != name]
+        data['filters'].append(record)
+        os.makedirs(os.path.dirname(EXPLORER_FILTERS_FILE), exist_ok=True)
+        with open(EXPLORER_FILTERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return jsonify({'success': True, 'saved': record})
+    except Exception as e:
+        logger.error('필터 저장 오류: %s', e)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/data/ticker-list', methods=['GET'])

@@ -210,4 +210,44 @@ export const getMarketHeatmap = async (): Promise<MarketHeatmapResponse> => {
   return response.data;
 };
 
+// 📋 종목 탐색 API
+export interface ExplorerListParams {
+  q?: string;
+  sector?: string; // comma separated for multi-select
+  size?: string;   // 'large,mid,small'
+  sort_by?: 'change_pct' | 'volatility' | 'market_cap' | 'close' | 'alpha_score' | 'ticker';
+  order?: 'asc' | 'desc';
+  limit?: number;
+  alpha_expression?: string;
+  alpha_factor?: string;
+  rsi_period?: number;
+  rsi_min?: number;
+  rsi_max?: number;
+  macd_fast?: number;
+  macd_slow?: number;
+  macd_signal?: number;
+  macd_hist_min?: number;
+  macd_hist_max?: number;
+}
+
+export const getExplorerList = async (params: ExplorerListParams = {}) => {
+  const response = await api.get('/api/explorer/list', { params, withCredentials: true });
+  return response.data;
+};
+
+// 📋 기본 종목 목록 API (단순 목록/검색)
+export interface StocksListParams {
+  q?: string;
+  sector?: string;
+  order?: 'market_cap' | 'ticker' | 'change_pct' | 'close';
+  dir?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+}
+
+export const getStocks = async (params: StocksListParams = {}) => {
+  const response = await api.get('/api/stocks', { params, withCredentials: true });
+  return response.data;
+};
+
 export default api;
